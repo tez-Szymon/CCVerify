@@ -29,7 +29,7 @@ struct SettingsView: View {
                 TextField("Allowed tools", text: $allowedTools, axis: .vertical)
                     .lineLimit(3...6)
                     .font(.caption)
-                    .help("Passed to claude --allowedTools. Add Bash(gh pr comment:*) to let reviews post to the PR.")
+                    .help("Passed to claude --allowedTools. The defaults cover /review-pr --publish (posting the verdict and comments to the PR).")
                 TextField("Review timeout (seconds)", value: $reviewTimeout, format: .number)
             }
 

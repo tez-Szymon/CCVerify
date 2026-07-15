@@ -28,7 +28,8 @@ CCVerify.app (menu bar, SwiftUI)
        ├─ match owner/repo → local checkout under ~/Documents/Repos
        │    (by each folder's `origin` remote in .git/config)
        └─ for each NEW review request:
-            cd <local repo> && claude -p "/review-pr <url>" --allowedTools <read-only set>
+            cd <local repo> && claude -p "/review-pr <url> --publish" --allowedTools <default set>
+            → verdict + comments posted to the GitHub PR (--publish)
             → report + history entry in ~/Library/Application Support/CCVerify/
             → notification
 ```
@@ -64,9 +65,14 @@ points at the new path.
   commits does not re-trigger. Use **Re-run Review** in the History window.
 - **Failures are never auto-retried** (no silent token burn) — you get a
   notification and a failed history entry instead.
-- **Read-only tool allowlist**: the review cannot edit files or post PR
-  comments. To let it post, add `Bash(gh pr comment:*),Bash(gh pr review:*)`
-  to *Allowed tools* in Settings.
+- **Publishes by default**: the prompt is `/review-pr {url} --publish`, so the
+  verdict (approve / request changes) and grouped findings are posted to the
+  GitHub PR. For local-only reports, remove `--publish` from the prompt
+  template in Settings.
+- **Scoped tool allowlist**: beyond read-only tools, only the `gh` commands
+  publishing needs (`gh pr review`, `gh pr comment`, `gh api`) plus `Write`
+  (for review payload files) are allowed — the review cannot run arbitrary
+  shell commands.
 - Reviews run sequentially; a timeout (default 40 min) kills runaways.
 
 ## Files
