@@ -6,6 +6,12 @@ final class Poller: ObservableObject {
     let store: AppStore
     @Published var isBusy = false
     private var loopTask: Task<Void, Never>?
+    // Per-run report text captured from the stream's final `result` event,
+    // with concatenated assistant text as fallback if that event never comes.
+    private var resultText: [UUID: String] = [:]
+    private var assistantText: [UUID: String] = [:]
+    // TaskCreate assigns sequential ids ("Task #1 created"); mirror that here.
+    private var taskCounter: [UUID: Int] = [:]
 
     init(store: AppStore) {
         self.store = store
@@ -126,13 +132,40 @@ final class Poller: ObservableObject {
             .replacingOccurrences(of: "{number}", with: String(run.prNumber))
             .replacingOccurrences(of: "{title}", with: run.title)
 
+        // Raw event stream is kept as a sidecar for debugging.
+        let streamURL = reportURL.deletingPathExtension().appendingPathExtension("jsonl")
+        try? FileManager.default.createDirectory(at: store.reviewsDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: streamURL.path, contents: nil)
+        let streamHandle = try? FileHandle(forWritingTo: streamURL)
+
+        let runID = run.id
         let result = await ProcessRunner.run(
             AppSettings.claudePath,
-            ["-p", prompt, "--allowedTools", AppSettings.allowedTools],
+            [
+                "-p", prompt, "--allowedTools", AppSettings.allowedTools,
+                "--output-format", "stream-json", "--verbose",
+            ],
             cwd: localPath,
             timeout: TimeInterval(AppSettings.reviewTimeoutSecs),
-            stdoutFile: reportURL
+            onStdoutLine: { line in
+                streamHandle?.write(Data((line + "\n").utf8))
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self.handleStreamLine(line, runID: runID) }
+                }
+            }
         )
+        try? streamHandle?.close()
+
+        // Pick up progress fields the stream handler wrote while we awaited.
+        if let live = store.runs.first(where: { $0.id == runID }) { run = live }
+        run.currentAction = nil
+
+        let reportText = resultText.removeValue(forKey: runID)
+            ?? assistantText[runID]
+            ?? ""
+        assistantText.removeValue(forKey: runID)
+        taskCounter.removeValue(forKey: runID)
+        try? Data(reportText.utf8).write(to: reportURL, options: .atomic)
 
         run.finishedAt = Date()
         run.exitCode = result.exitCode
@@ -152,6 +185,128 @@ final class Poller: ObservableObject {
         }
         store.currentActivity = nil
         store.upsert(run)
+    }
+
+    // MARK: - Stream-json progress parsing
+
+    private func handleStreamLine(_ line: String, runID: UUID) {
+        guard let data = line.data(using: .utf8),
+              let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = event["type"] as? String
+        else { return }
+        guard var run = store.runs.first(where: { $0.id == runID }) else { return }
+
+        switch type {
+        case "assistant":
+            guard let message = event["message"] as? [String: Any],
+                  let content = message["content"] as? [[String: Any]]
+            else { return }
+            let nested = event["parent_tool_use_id"] as? String != nil
+            for block in content {
+                switch block["type"] as? String {
+                case "text":
+                    if !nested, let text = block["text"] as? String, !text.isEmpty {
+                        assistantText[runID, default: ""] += text
+                    }
+                case "tool_use":
+                    guard let name = block["name"] as? String else { continue }
+                    let input = block["input"] as? [String: Any] ?? [:]
+                    // The plan/checkpoint list claude maintains for the task:
+                    // current Claude Code uses TaskCreate/TaskUpdate; TodoWrite is
+                    // the older equivalent. Subagents keep their own lists — only
+                    // track the top-level one.
+                    if name == "TodoWrite", let todos = input["todos"] as? [[String: Any]] {
+                        if !nested {
+                            run.todos = todos.compactMap { todo in
+                                guard let content = todo["content"] as? String,
+                                      let status = todo["status"] as? String
+                                else { return nil }
+                                return TodoItem(content: content, status: status)
+                            }
+                        }
+                    } else if name == "TaskCreate" {
+                        if !nested {
+                            let nextID = (taskCounter[runID] ?? 0) + 1
+                            taskCounter[runID] = nextID
+                            let subject = input["subject"] as? String
+                                ?? input["description"] as? String ?? "task"
+                            var todos = run.todos ?? []
+                            todos.append(TodoItem(content: subject, status: "pending", taskID: String(nextID)))
+                            run.todos = todos
+                        }
+                    } else if name == "TaskUpdate" {
+                        if !nested, var todos = run.todos {
+                            let taskID = input["taskId"] as? String
+                                ?? (input["taskId"] as? Int).map(String.init)
+                            if let taskID, let i = todos.firstIndex(where: { $0.taskID == taskID }) {
+                                if let status = input["status"] as? String {
+                                    if status == "deleted" {
+                                        todos.remove(at: i)
+                                    } else {
+                                        todos[i].status = status
+                                    }
+                                }
+                                if let subject = input["subject"] as? String, todos.indices.contains(i) {
+                                    todos[i].content = subject
+                                }
+                                run.todos = todos
+                            }
+                        }
+                    } else {
+                        let summary = (nested ? "↳ " : "") + Self.summarizeTool(name, input)
+                        run.currentAction = summary
+                        var actions = run.recentActions ?? []
+                        if actions.last != summary { actions.append(summary) }
+                        if actions.count > 30 { actions.removeFirst(actions.count - 30) }
+                        run.recentActions = actions
+                    }
+                default:
+                    continue
+                }
+            }
+            store.updateLive(run)
+        case "result":
+            run.numTurns = event["num_turns"] as? Int
+            if let cost = event["total_cost_usd"] as? Double, cost > 0 {
+                run.costUSD = cost
+            }
+            if let text = event["result"] as? String, !text.isEmpty {
+                resultText[runID] = text
+            }
+            store.updateLive(run)
+        default:
+            break
+        }
+    }
+
+    nonisolated static func summarizeTool(_ name: String, _ input: [String: Any]) -> String {
+        func clip(_ s: String, _ max: Int = 80) -> String {
+            let oneLine = s.replacingOccurrences(of: "\n", with: " ")
+            return oneLine.count > max ? String(oneLine.prefix(max)) + "…" : oneLine
+        }
+        switch name {
+        case "Bash":
+            if let cmd = input["command"] as? String { return clip(cmd) }
+        case "Read", "Write", "Edit":
+            if let path = input["file_path"] as? String {
+                return "\(name) \((path as NSString).lastPathComponent)"
+            }
+        case "Grep":
+            if let pattern = input["pattern"] as? String { return "Grep \(clip(pattern, 50))" }
+        case "Glob":
+            if let pattern = input["pattern"] as? String { return "Glob \(clip(pattern, 50))" }
+        case "Task", "Agent":
+            let agent = input["subagent_type"] as? String
+            let desc = input["description"] as? String ?? input["prompt"] as? String
+            return "Agent\(agent.map { " (\($0))" } ?? ""): \(clip(desc ?? "subtask", 60))"
+        case "WebFetch":
+            if let url = input["url"] as? String { return "Fetch \(clip(url, 60))" }
+        case "WebSearch":
+            if let query = input["query"] as? String { return "Search \(clip(query, 60))" }
+        default:
+            break
+        }
+        return name
     }
 
     // MARK: - Local repo resolution

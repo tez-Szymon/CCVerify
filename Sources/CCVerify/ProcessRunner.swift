@@ -12,18 +12,23 @@ struct ProcessResult {
 
 enum ProcessRunner {
     /// Run a subprocess off the main thread. If `stdoutFile` is given, stdout
-    /// streams straight to that file (used for large claude review reports).
+    /// streams straight to that file; if `onStdoutLine` is given, each stdout
+    /// line is delivered to the callback as it arrives (streaming JSON parsing).
     /// ANTHROPIC_* env vars are stripped so claude always uses subscription auth.
     static func run(
         _ executable: String,
         _ arguments: [String],
         cwd: String? = nil,
         timeout: TimeInterval? = nil,
-        stdoutFile: URL? = nil
+        stdoutFile: URL? = nil,
+        onStdoutLine: (@Sendable (String) -> Void)? = nil
     ) async -> ProcessResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: runSync(executable, arguments, cwd: cwd, timeout: timeout, stdoutFile: stdoutFile))
+                continuation.resume(
+                    returning: runSync(
+                        executable, arguments, cwd: cwd, timeout: timeout,
+                        stdoutFile: stdoutFile, onStdoutLine: onStdoutLine))
             }
         }
     }
@@ -33,7 +38,8 @@ enum ProcessRunner {
         _ arguments: [String],
         cwd: String?,
         timeout: TimeInterval?,
-        stdoutFile: URL?
+        stdoutFile: URL?,
+        onStdoutLine: (@Sendable (String) -> Void)?
     ) -> ProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -57,7 +63,32 @@ enum ProcessRunner {
 
         var outputHandle: FileHandle?
         let outPipe = Pipe()
-        if let stdoutFile {
+        let lineGroup = DispatchGroup()
+        if let onStdoutLine {
+            lineGroup.enter()
+            var buffer = Data()
+            outPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    // EOF: flush any trailing partial line, stop reading.
+                    if !buffer.isEmpty, let line = String(data: buffer, encoding: .utf8) {
+                        onStdoutLine(line)
+                    }
+                    handle.readabilityHandler = nil
+                    lineGroup.leave()
+                    return
+                }
+                buffer.append(chunk)
+                while let nl = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let lineData = buffer.prefix(upTo: nl)
+                    buffer.removeSubrange(...nl)
+                    if let line = String(data: lineData, encoding: .utf8), !line.isEmpty {
+                        onStdoutLine(line)
+                    }
+                }
+            }
+            process.standardOutput = outPipe
+        } else if let stdoutFile {
             try? FileManager.default.createDirectory(
                 at: stdoutFile.deletingLastPathComponent(), withIntermediateDirectories: true)
             FileManager.default.createFile(atPath: stdoutFile.path, contents: nil)
@@ -102,7 +133,9 @@ enum ProcessRunner {
             group.leave()
         }
         var outData = Data()
-        if stdoutFile == nil {
+        if onStdoutLine != nil {
+            lineGroup.wait() // all lines delivered (EOF reached)
+        } else if stdoutFile == nil {
             outData = outPipe.fileHandleForReading.readDataToEndOfFile()
         }
         process.waitUntilExit()

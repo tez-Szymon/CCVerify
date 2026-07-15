@@ -106,6 +106,18 @@ private struct RunDetailView: View {
                         Text(String(exitCode))
                     }
                 }
+                if let turns = run.numTurns {
+                    GridRow {
+                        label("Turns")
+                        Text(String(turns))
+                    }
+                }
+                if let cost = run.costUSD {
+                    GridRow {
+                        label("Est. cost")
+                        Text(cost, format: .currency(code: "USD").precision(.fractionLength(2)))
+                    }
+                }
                 if let localPath = run.localRepoPath {
                     GridRow {
                         label("Local repo")
@@ -146,10 +158,10 @@ private struct RunDetailView: View {
     private var reportView: some View {
         Group {
             if run.status == .running {
-                ContentUnavailableView {
-                    ProgressView()
-                } description: {
-                    Text("Claude is reviewing this PR…")
+                ScrollView {
+                    LiveProgressView(run: run)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
                 }
             } else if reportText.isEmpty {
                 ContentUnavailableView(
@@ -157,11 +169,21 @@ private struct RunDetailView: View {
                     description: Text("This run produced no report."))
             } else {
                 ScrollView {
-                    Text(reportText)
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let todos = run.todos, !todos.isEmpty {
+                            DisclosureGroup {
+                                TodoListView(todos: todos).padding(.top, 4)
+                            } label: {
+                                let done = todos.filter { $0.status == "completed" }.count
+                                Text("Checkpoints (\(done)/\(todos.count))").font(.callout.weight(.medium))
+                            }
+                        }
+                        Text(reportText)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding()
                 }
                 .background(Color(nsColor: .textBackgroundColor))
             }
@@ -177,5 +199,110 @@ private struct RunDetailView: View {
             return
         }
         reportText = text
+    }
+}
+
+/// Live progress for a running review: elapsed + ETA, current action,
+/// the plan checkpoints claude maintains, and a recent-activity feed.
+struct LiveProgressView: View {
+    @EnvironmentObject var store: AppStore
+    let run: ReviewRun
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let estimate = store.estimatedReviewDuration {
+                        ProgressView(value: min(elapsed / estimate, 1))
+                        Text(etaText(elapsed: elapsed, estimate: estimate))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                        Text("Elapsed \(format(elapsed)) — no estimate yet (first review)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let action = run.currentAction {
+                Label {
+                    Text(action).font(.system(.caption, design: .monospaced)).lineLimit(2)
+                } icon: {
+                    Image(systemName: "terminal")
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            if let todos = run.todos, !todos.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Plan").font(.callout.weight(.medium))
+                    TodoListView(todos: todos)
+                }
+            }
+
+            if let actions = run.recentActions, !actions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Recent activity").font(.callout.weight(.medium))
+                    ForEach(Array(actions.suffix(12).enumerated()), id: \.offset) { _, action in
+                        Text(action)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    private func etaText(elapsed: TimeInterval, estimate: TimeInterval) -> String {
+        if elapsed < estimate {
+            let remaining = estimate - elapsed
+            return "Elapsed \(format(elapsed)) — ≈\(format(remaining)) remaining (median of past reviews)"
+        }
+        return "Elapsed \(format(elapsed)) — taking longer than usual (typical: \(format(estimate)))"
+    }
+
+    private func format(_ interval: TimeInterval) -> String {
+        let mins = Int(interval) / 60
+        let secs = Int(interval) % 60
+        return mins > 0 ? "\(mins)m \(String(format: "%02d", secs))s" : "\(secs)s"
+    }
+}
+
+struct TodoListView: View {
+    let todos: [TodoItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(todos.enumerated()), id: \.offset) { _, todo in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: icon(for: todo.status))
+                        .foregroundStyle(color(for: todo.status))
+                        .font(.caption)
+                    Text(todo.content)
+                        .font(.caption)
+                        .strikethrough(todo.status == "completed", color: .secondary)
+                        .foregroundStyle(todo.status == "completed" ? .secondary : .primary)
+                }
+            }
+        }
+    }
+
+    private func icon(for status: String) -> String {
+        switch status {
+        case "completed": return "checkmark.circle.fill"
+        case "in_progress": return "arrow.triangle.2.circlepath.circle.fill"
+        default: return "circle"
+        }
+    }
+
+    private func color(for status: String) -> Color {
+        switch status {
+        case "completed": return .green
+        case "in_progress": return .blue
+        default: return .secondary
+        }
     }
 }

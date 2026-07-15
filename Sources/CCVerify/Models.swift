@@ -1,5 +1,11 @@
 import Foundation
 
+struct TodoItem: Codable, Hashable {
+    var content: String
+    var status: String // pending | in_progress | completed
+    var taskID: String? // set when the plan comes from TaskCreate/TaskUpdate
+}
+
 struct ReviewRun: Codable, Identifiable, Hashable {
     enum Status: String, Codable {
         case queued
@@ -34,6 +40,12 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var reportPath: String?
     var localRepoPath: String?
     var errorMessage: String?
+    // Live progress (from claude's stream-json output)
+    var todos: [TodoItem]?
+    var currentAction: String?
+    var recentActions: [String]?
+    var numTurns: Int?
+    var costUSD: Double?
 
     var key: String { "\(repo)#\(prNumber)" }
 

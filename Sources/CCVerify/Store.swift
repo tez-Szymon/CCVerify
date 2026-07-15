@@ -61,6 +61,24 @@ final class AppStore: ObservableObject {
         save()
     }
 
+    /// In-memory update for high-frequency streaming progress — no disk write.
+    func updateLive(_ run: ReviewRun) {
+        if let i = runs.firstIndex(where: { $0.id == run.id }) {
+            runs[i] = run
+        }
+    }
+
+    /// Median duration of recent successful reviews; nil until one has finished.
+    var estimatedReviewDuration: TimeInterval? {
+        let durations = runs.lazy
+            .filter { $0.status == .done }
+            .compactMap(\.duration)
+            .prefix(10)
+            .sorted()
+        guard !durations.isEmpty else { return nil }
+        return max(120, durations[durations.count / 2])
+    }
+
     func delete(_ run: ReviewRun) {
         runs.removeAll { $0.id == run.id }
         save()

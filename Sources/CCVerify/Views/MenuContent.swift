@@ -23,6 +23,9 @@ struct MenuContent: View {
                 Circle().fill(statusColor).frame(width: 8, height: 8)
                 Text(statusText).font(.headline)
             }
+            if let running = store.runs.first(where: { $0.status == .running }) {
+                liveProgress(for: running)
+            }
             if let lastPoll = store.lastPollAt {
                 Text("Last poll: \(lastPoll.formatted(date: .omitted, time: .standard))")
                     .font(.caption).foregroundStyle(.secondary)
@@ -33,6 +36,40 @@ struct MenuContent: View {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(3)
             }
         }
+    }
+
+    private func liveProgress(for run: ReviewRun) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
+            VStack(alignment: .leading, spacing: 3) {
+                if let estimate = store.estimatedReviewDuration {
+                    ProgressView(value: min(elapsed / estimate, 1))
+                        .controlSize(.small)
+                    Text("\(formatDuration(elapsed)) elapsed — ≈\(formatDuration(max(0, estimate - elapsed))) left")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("\(formatDuration(elapsed)) elapsed")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if let todos = run.todos, !todos.isEmpty {
+                    let done = todos.filter { $0.status == "completed" }.count
+                    Text("Checkpoints: \(done)/\(todos.count)"
+                        + (todos.first(where: { $0.status == "in_progress" }).map { " — \($0.content)" } ?? ""))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if let action = run.currentAction {
+                    Text(action)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let mins = Int(interval) / 60
+        let secs = Int(interval) % 60
+        return mins > 0 ? "\(mins)m \(String(format: "%02d", secs))s" : "\(secs)s"
     }
 
     private var statusColor: Color {

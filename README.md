@@ -15,6 +15,12 @@ No server, no webhooks, no repo admin rights: it polls
 - **History window** — every run with status (done / failed / timed out /
   no local repo), timestamps, duration, exit code, and the full review report
   rendered in-app. Open the PR, reveal the report file, or re-run a review.
+- **Live progress** — reviews run with `--output-format stream-json`, so a
+  running review shows its plan checkpoints (from claude's TaskCreate/TaskUpdate
+  or TodoWrite), the current tool action, a recent-activity feed, and elapsed
+  time with an ETA estimated from the median of your past review durations.
+  Finished runs keep the final checkpoint list, turn count, and estimated cost;
+  the raw event stream is saved next to each report as a `.jsonl` sidecar.
 - **Settings window** (⌘,) — poll interval, repos directory, prompt template,
   allowed tools, timeout, draft filtering, notifications, launch at login.
 - **macOS notifications** on review start / finish / failure.
