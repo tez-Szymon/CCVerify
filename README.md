@@ -50,6 +50,20 @@ CCVerify.app (menu bar, SwiftUI)
 Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
 (logged in with your subscription via `/login`).
 
+### Install the review agent
+
+The default prompt invokes the `/review-pr` slash command, which must exist in
+your `~/.claude`. A copy ships in this repo (`claude/`): the dispatcher command
+plus three stack-specific reviewer agents (Next.js, .NET, generic fallback).
+
+```bash
+./install-review-agent.sh           # copies into ~/.claude (never overwrites)
+./install-review-agent.sh --force   # overwrite existing files
+```
+
+If you already have your own review command, skip this and point the prompt
+template in Settings at it instead.
+
 Enable **Launch at login** in Settings to make it permanent. If you move the
 app (e.g. to /Applications), re-toggle launch-at-login so the registration
 points at the new path.
