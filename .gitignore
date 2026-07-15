@@ -1,0 +1,5 @@
+state/
+logs/
+reviews/
+config.local.sh
+.DS_Store
