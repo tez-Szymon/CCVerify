@@ -1,101 +1,90 @@
 # CCVerify
 
-Local, webhook-free automation: when someone requests **your** review on a
-GitHub PR, CCVerify notices within ~2 minutes and runs a **local Claude Code
-review** (`claude -p "/review-pr <url>"`) inside your checkout of that repo.
-The finished report lands in `reviews/` and you get a macOS notification.
+A native macOS **menu bar app** that watches GitHub for PRs where **your review
+is requested** and automatically runs a **local Claude Code review**
+(`claude -p "/review-pr <url>"`) inside your checkout of that repo — with a
+history of runs, per-run details, and the full review report in the app.
 
-No server, no webhooks, no repo admin rights needed — just a `launchd` job
-polling `gh search prs --review-requested=@me` every 120 seconds.
+No server, no webhooks, no repo admin rights: it polls
+`gh search prs --review-requested=@me` every 2 minutes.
+
+## Features
+
+- **Menu bar status** — watching / reviewing / paused / poll errors, plus the
+  five most recent runs at a glance.
+- **History window** — every run with status (done / failed / timed out /
+  no local repo), timestamps, duration, exit code, and the full review report
+  rendered in-app. Open the PR, reveal the report file, or re-run a review.
+- **Settings window** (⌘,) — poll interval, repos directory, prompt template,
+  allowed tools, timeout, draft filtering, notifications, launch at login.
+- **macOS notifications** on review start / finish / failure.
 
 ## How it works
 
 ```
-launchd (every 120s)
-  └─ bin/ccverify-poll.sh
-       ├─ gh search prs --review-requested=@me --state=open
-       ├─ diff against state/seen.json  (first run only baselines the backlog)
+CCVerify.app (menu bar, SwiftUI)
+  └─ every N seconds: gh search prs --review-requested=@me --state=open
+       ├─ diff against seen set (first poll baselines the backlog)
        ├─ match owner/repo → local checkout under ~/Documents/Repos
-       │    (by each folder's `origin` remote)
+       │    (by each folder's `origin` remote in .git/config)
        └─ for each NEW review request:
-            cd <local repo> && claude -p "/review-pr <url>"
-            → reviews/<owner>-<repo>-pr<N>-<timestamp>.md
-            → macOS notification (started / finished / failed)
+            cd <local repo> && claude -p "/review-pr <url>" --allowedTools <read-only set>
+            → report + history entry in ~/Library/Application Support/CCVerify/
+            → notification
 ```
 
-## Install
+## Build & run
 
 ```bash
-./install.sh      # generates + loads ~/Library/LaunchAgents/com.ccverify.poller.plist
-./uninstall.sh    # stops and removes the agent
+./build.sh          # builds dist/CCVerify.app (Swift 5.9+, macOS 14+)
+./build.sh --run    # build + (re)launch
 ```
 
-Requirements: `gh` (authenticated), `jq`, `claude` (logged in with your
-subscription via `/login`).
+Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
+(logged in with your subscription via `/login`).
 
-## Billing / auth notes
+Enable **Launch at login** in Settings to make it permanent. If you move the
+app (e.g. to /Applications), re-toggle launch-at-login so the registration
+points at the new path.
 
-- Runs on your **normal Claude subscription** (OAuth login), drawing from plan
-  usage limits — the poller explicitly `unset`s `ANTHROPIC_API_KEY` /
-  `ANTHROPIC_AUTH_TOKEN` so a stray key can never switch it to per-token API
-  billing.
-- Deliberately **not** `--bare` mode: we want CLAUDE.md, skills (`/review-pr`)
-  and agents from the target repo loaded.
+## Billing / auth
 
-## Configuration
+- Reviews run on your **normal Claude subscription** (OAuth login), drawing
+  from plan usage limits. The app strips `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN` from the claude environment so a stray key can never
+  switch it to per-token API billing.
+- Deliberately **not** `--bare` mode: CLAUDE.md, skills (`/review-pr`) and
+  agents from the target repo are loaded — that's the point.
 
-Defaults live in `config.sh`; put machine-specific overrides in
-`config.local.sh` (git-ignored). Notable knobs:
+## Safety defaults
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `REPOS_DIR` | `~/Documents/Repos` | Where local checkouts are matched |
-| `CLAUDE_PROMPT` | `/review-pr {url}` | Prompt template (`{url}`, `{repo}`, `{number}`, `{title}`) |
-| `CLAUDE_ALLOWED_TOOLS` | read-only + `gh`/`git` reads | The review **cannot** post PR comments or edit files by default |
-| `REVIEW_TIMEOUT_SECS` | `2400` | Kill runaway reviews |
-| `INCLUDE_DRAFTS` | `false` | Ignore draft PRs |
-| `NOTIFY` | `true` | macOS notifications |
+- **First poll baselines**: PRs already awaiting your review when the app
+  first runs are marked seen — only *new* requests trigger reviews.
+- **One review per PR** (keyed `owner/repo#number`); a re-request after new
+  commits does not re-trigger. Use **Re-run Review** in the History window.
+- **Failures are never auto-retried** (no silent token burn) — you get a
+  notification and a failed history entry instead.
+- **Read-only tool allowlist**: the review cannot edit files or post PR
+  comments. To let it post, add `Bash(gh pr comment:*),Bash(gh pr review:*)`
+  to *Allowed tools* in Settings.
+- Reviews run sequentially; a timeout (default 40 min) kills runaways.
 
-To let reviews **post to the PR**, add to `config.local.sh`:
+## Files
 
-```bash
-CLAUDE_ALLOWED_TOOLS="$CLAUDE_ALLOWED_TOOLS,Bash(gh pr comment:*),Bash(gh pr review:*)"
-```
+| Path | Purpose |
+|---|---|
+| `~/Library/Application Support/CCVerify/state.json` | run history + seen set |
+| `~/Library/Application Support/CCVerify/reviews/*.md` | review reports |
+| `~/Library/Application Support/CCVerify/ccverify.log` | poller log |
 
-Poll interval: `StartInterval` in `launchd/com.ccverify.poller.plist.template`
-(re-run `./install.sh` after changing it).
+## Troubleshooting
 
-## Behavior details & known limits
-
-- **First run baselines**: everything already awaiting your review when the
-  poller first runs is marked seen — only *new* requests trigger reviews.
-- **Seen = once per PR**: a PR is reviewed once (keyed `owner/repo#number`).
-  A re-request after new commits does **not** re-trigger. To force a re-review,
-  delete the PR's key from `state/seen.json`.
-- **Failures are never retried automatically** (no silent token burn): you get
-  a failure notification and a log entry instead.
-- **No local checkout → no review**: you're notified, and the PR is skipped.
-  Clone the repo under `REPOS_DIR` to include it.
-- **One review at a time**: a lock prevents overlapping poller runs; reviews
-  for multiple new PRs run sequentially.
-- `gh search` hits the GitHub *search* API, which can lag a few seconds behind
-  real-time and only sees repos your token can access.
-
-## One-time macOS permission (required)
-
-macOS TCC blocks launchd-spawned processes from touching `~/Documents`, and
-both this repo and your checkouts live there — without the grant the agent
-exits 126 with `Operation not permitted` and does nothing.
-
-1. System Settings → **Privacy & Security → Full Disk Access**
-2. Click **+**, press **⌘⇧G**, enter `/bin/bash`, add it, toggle it **on**
-3. Kick the agent: `launchctl kickstart -k gui/$(id -u)/com.ccverify.poller`
-4. Verify: `logs/poller.log` should show the baseline line
-
-## Debugging
-
-```bash
-bash bin/ccverify-poll.sh --dry-run   # detect + log, don't run claude
-tail -f logs/poller.log               # poller activity
-launchctl print gui/$(id -u)/com.ccverify.poller   # agent status
-```
+- **No local checkout found** — the PR's repo must be cloned directly under
+  the repos directory (default `~/Documents/Repos`) with an `origin` remote
+  pointing at github.com.
+- **Documents access** — if macOS asks that CCVerify may access your
+  Documents folder, allow it (repos live there). If it was denied, re-enable
+  in System Settings → Privacy & Security → Files and Folders.
+- **Poll errors in the menu** — usually `gh` auth; run `gh auth status`.
+- `tail -f ~/Library/Application\ Support/CCVerify/ccverify.log` shows every
+  poll and review.

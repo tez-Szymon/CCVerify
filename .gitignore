@@ -1,5 +1,3 @@
-state/
-logs/
-reviews/
-config.local.sh
+.build/
+dist/
 .DS_Store
