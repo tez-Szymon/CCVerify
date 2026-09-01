@@ -29,6 +29,9 @@ done
 for agent in "$ROOT"/claude/agents/pr-reviewer-*.md; do
   install_file "$agent" "$HOME/.claude/agents/$(basename "$agent")"
 done
+for skill in "$ROOT"/claude/skills/*/SKILL.md; do
+  install_file "$skill" "$HOME/.claude/skills/$(basename "$(dirname "$skill")")/SKILL.md"
+done
 
 echo
 echo "Done. CCVerify's prompts now resolve:"

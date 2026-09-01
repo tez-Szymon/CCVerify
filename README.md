@@ -104,7 +104,12 @@ ship in this repo (`claude/`): `/review-pr` (dispatcher + three stack-specific
 reviewer agents), `/review-dependabot-pr` (multi-stack Dependabot review with
 an unattended `--auto` mode), `/update-dependencies` (safe update scan), and
 `/analyze-dep-tickets` (deep-dive of the `dep-major` Jira tickets the scan
-files).
+files). Also bundled: the `dependabot-review` skill
+(`claude/skills/dependabot-review/`), the interactive text2park.web-specific
+review workflow — not required by the app (the bundled command is
+self-contained), but version-controlled here so a machine that uses it can be
+reproduced. Like every mutating run, it verifies in a throwaway `git worktree`
+and never checks out branches in the main working copy.
 
 ```bash
 ./install-review-agent.sh           # copies into ~/.claude (never overwrites)
