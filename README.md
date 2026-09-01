@@ -1,7 +1,9 @@
 # CCVerify
 
-A native macOS **menu bar app** that watches GitHub for PRs where **your review
-is requested** and automatically runs a **local Claude Code review**
+A native macOS app — a regular app with a main window, top-bar menu (Runs →
+Poll Now ⌘R, Scan for Updates; Settings under ⌘,) **plus** a menu bar status
+item — that watches GitHub for PRs where **your review is requested** and
+automatically runs a **local Claude Code review**
 (`claude -p "/review-pr <url>"`) inside your checkout of that repo — with a
 history of runs, per-run details, and the full review report in the app.
 
@@ -10,8 +12,11 @@ No server, no webhooks, no repo admin rights: it polls
 
 ## Features
 
-- **Menu bar status** — watching / reviewing / paused / poll errors, plus the
-  five most recent runs at a glance.
+- **Main window at launch** — the run history opens as a normal window; the
+  Dock icon and Window menu bring it back, and the app has a real menu bar
+  (Runs → Poll Now / Pause / Scan for Updates, Settings… under ⌘,).
+- **Menu bar status item** — watching / reviewing / paused / poll errors, plus
+  the five most recent runs at a glance.
 - **History window** — every run with status (done / failed / timed out /
   no local repo), timestamps, duration, exit code, and the full review report
   rendered in-app. Open the PR, reveal the report file, or re-run a review.
@@ -21,9 +26,36 @@ No server, no webhooks, no repo admin rights: it polls
   time with an ETA estimated from the median of your past review durations.
   Finished runs keep the final checkpoint list, turn count, and estimated cost;
   the raw event stream is saved next to each report as a `.jsonl` sidecar.
-- **Settings window** (⌘,) — poll interval, repos directory, prompt template,
-  allowed tools, timeout, draft filtering, notifications, launch at login.
+- **In-window Settings** (⌘,, or the gear in the toolbar / status item) — shown
+  inside the main window, split into General / Reviews / Dependabot / Updates /
+  Tickets tabs: poll interval, repos directory, prompt templates, allowed
+  tools, timeout, draft filtering, notifications, launch at login.
 - **macOS notifications** on review start / finish / failure.
+- **Dependabot reviews** (opt-in) — watches a configured list of repos for new
+  PRs authored by Dependabot and reviews each one unattended with
+  `/review-dependabot-pr {number} --auto`: toolchain-aware verification in an
+  isolated git worktree, risk assessment, and the review comment posted to the
+  GitHub PR and its linked Jira ticket. Never approves, merges, or pushes.
+- **Dependency update scans** — CCVerify's own "safe dependabot": runs
+  `/update-dependencies --auto` per configured repo, on demand via the
+  **Scan for updates** button (menu → Dependabot tab, or the History toolbar)
+  and optionally on a schedule (opt-in, default every 24h). It finds
+  outdated packages, applies only patch/minor bumps whose changelogs are clean,
+  verifies them (install / lint / test / build) in a throwaway worktree, and
+  only when everything is green opens a `deps/*` PR and files a Jira ticket.
+  Nothing safe to bump → a report, and no PR. Majors are never applied — they
+  get `dep-major` Jira backlog tickets instead, which feed the next feature.
+- **Major ticket deep-dives** — closes the loop on those `dep-major` tickets:
+  runs `/analyze-dep-tickets --auto` per configured repo, on demand via
+  **Analyze major tickets** (menu → Dependabot tab, or Runs menu) and
+  optionally on a schedule (opt-in, default every 24h). For each open ticket
+  not yet labeled `dep-analyzed` it researches the major's breaking changes,
+  checks the codebase against every one of them, trial-upgrades in an isolated
+  worktree, and posts the full analysis as a Jira comment. Verdict
+  ✅ SAFE TO UPDATE (nothing affected + verification green) additionally opens
+  a `deps/major-*` PR linked from the comment; ⚠️ NEEDS MIGRATION /
+  ⛔ BLOCKED tickets get the analysis (with a migration checklist) only.
+  Never merges, approves, or transitions tickets.
 
 ## How it works
 
@@ -38,6 +70,21 @@ CCVerify.app (menu bar, SwiftUI)
             → verdict + comments posted to the GitHub PR (--publish)
             → report + history entry in ~/Library/Application Support/CCVerify/
             → notification
+  └─ if enabled: gh search prs --author app/dependabot (configured repos)
+       └─ for each NEW Dependabot PR:
+            claude -p "/review-dependabot-pr <number> --auto"
+            → risk-assessed review comment → GitHub PR + linked Jira ticket
+  └─ if enabled: every N hours per configured repo:
+            claude -p "/update-dependencies --auto"
+            → safe patch/minor bumps verified in a worktree
+            → PR (deps/*) + Jira ticket only when checks pass
+            → skipped majors → dep-major Jira backlog tickets
+  └─ if enabled: every N hours per configured repo:
+            claude -p "/analyze-dep-tickets --auto"
+            → JQL: open dep-major tickets without the dep-analyzed label
+            → per ticket: breaking-change research + codebase impact check
+              + trial upgrade in a worktree → analysis posted as Jira comment
+            → SAFE verdict only: PR (deps/major-*) linked from the comment
 ```
 
 ## Build & run
@@ -52,14 +99,22 @@ Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
 
 ### Install the review agent
 
-The default prompt invokes the `/review-pr` slash command, which must exist in
-your `~/.claude`. A copy ships in this repo (`claude/`): the dispatcher command
-plus three stack-specific reviewer agents (Next.js, .NET, generic fallback).
+The prompts invoke slash commands that must exist in your `~/.claude`. Copies
+ship in this repo (`claude/`): `/review-pr` (dispatcher + three stack-specific
+reviewer agents), `/review-dependabot-pr` (multi-stack Dependabot review with
+an unattended `--auto` mode), `/update-dependencies` (safe update scan), and
+`/analyze-dep-tickets` (deep-dive of the `dep-major` Jira tickets the scan
+files).
 
 ```bash
 ./install-review-agent.sh           # copies into ~/.claude (never overwrites)
 ./install-review-agent.sh --force   # overwrite existing files
 ```
+
+If you already have your own `/review-dependabot-pr` (e.g. the text2park.web
+one), the installer will skip it — rerun with `--force` to replace it with the
+generalized version (the old one has no `--auto` mode, so unattended runs from
+CCVerify would stall waiting for approval).
 
 If you already have your own review command, skip this and point the prompt
 template in Settings at it instead.
@@ -94,6 +149,20 @@ points at the new path.
   (for review payload files) are allowed — the review cannot run arbitrary
   shell commands.
 - Reviews run sequentially; a timeout (default 40 min) kills runaways.
+- **Dependabot, update scans & ticket deep-dives are opt-in** (off by
+  default) and scoped to an explicit repo list. Pre-existing Dependabot PRs
+  are baselined (seen, not reviewed); scans and deep-dives run at most one
+  repo per poll tick. Each run kind has its own allowlist: dependabot reviews
+  add worktree + package-manager commands and Jira commenting; update scans
+  additionally allow `Edit`, commits, pushes restricted to `deps/*` branches,
+  `gh pr create`, and Jira issue creation; ticket deep-dives get Jira
+  search/read/comment/label instead of issue creation. None can approve or
+  merge.
+- **Update scans and ticket deep-dives never touch your working copy** —
+  verification happens in a throwaway `git worktree`, and a run that proves
+  nothing safe ends with a report (or an analysis comment), not a PR. A
+  deep-dive PR requires *both* halves: every breaking change shown to not
+  affect the codebase, and a fully green verification against a green base.
 
 ## Files
 

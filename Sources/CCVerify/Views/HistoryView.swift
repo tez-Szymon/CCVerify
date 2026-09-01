@@ -4,35 +4,89 @@ struct HistoryView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var poller: Poller
     @State private var selectedID: ReviewRun.ID?
+    @State private var tab: RunTab = .reviews
+
+    private var tabRuns: [ReviewRun] {
+        store.runs.filter { tab.matches($0) }
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedID) {
-                ForEach(store.runs) { run in
-                    RunRow(run: run)
-                        .tag(run.id)
-                        .contextMenu {
-                            Button("Delete", role: .destructive) { store.delete(run) }
-                        }
+            VStack(spacing: 0) {
+                Picker("", selection: $tab) {
+                    ForEach(RunTab.allCases) { tab in
+                        Text(label(for: tab)).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                Divider()
+                List(selection: $selectedID) {
+                    ForEach(tabRuns) { run in
+                        RunRow(run: run)
+                            .tag(run.id)
+                            .contextMenu {
+                                Button("Delete", role: .destructive) { store.delete(run) }
+                            }
+                    }
+                }
+                .overlay {
+                    if tabRuns.isEmpty {
+                        emptyState
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 260, ideal: 320)
-            .overlay {
-                if store.runs.isEmpty {
-                    ContentUnavailableView(
-                        "No reviews yet",
-                        systemImage: "checkmark.seal",
-                        description: Text("When someone requests your review on a PR, it will show up here."))
-                }
-            }
         } detail: {
             if let run = store.runs.first(where: { $0.id == selectedID }) {
                 RunDetailView(run: run)
             } else {
-                ContentUnavailableView("Select a review", systemImage: "sidebar.left")
+                ContentUnavailableView("Select a run", systemImage: "sidebar.left")
             }
         }
         .navigationTitle("CCVerify History")
+        .toolbar {
+            if tab == .dependabot {
+                DependencyScanMenu()
+            }
+            Button {
+                store.showingSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .help("Open Settings (⌘,)")
+        }
+        // Keep the selection in whichever tab the user is looking at.
+        .onChange(of: tab) { _, newTab in
+            if let selectedID, let run = store.runs.first(where: { $0.id == selectedID }),
+               !newTab.matches(run) {
+                self.selectedID = nil
+            }
+        }
+    }
+
+    private func label(for tab: RunTab) -> String {
+        let count = store.runs.lazy.filter { tab.matches($0) }.count
+        return count > 0 ? "\(tab.rawValue) (\(count))" : tab.rawValue
+    }
+
+    private var emptyState: some View {
+        Group {
+            switch tab {
+            case .reviews:
+                ContentUnavailableView(
+                    "No reviews yet",
+                    systemImage: "checkmark.seal",
+                    description: Text("When someone requests your review on a PR, it will show up here."))
+            case .dependabot:
+                ContentUnavailableView(
+                    "No Dependabot activity yet",
+                    systemImage: "shippingbox",
+                    description: Text("Enable Dependabot reviews or dependency update scans in Settings to see runs here."))
+            }
+        }
     }
 }
 
@@ -43,6 +97,7 @@ private struct RunRow: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(run.key).font(.callout.weight(.semibold)).lineLimit(1)
+                KindIcon(kind: run.runKind)
                 Spacer()
                 StatusBadge(status: run.status)
             }
@@ -77,7 +132,16 @@ private struct RunDetailView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.title).font(.title3.weight(.semibold))
-                    Text(run.key).font(.callout).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(run.key).font(.callout).foregroundStyle(.secondary)
+                        if run.runKind != .review {
+                            Text(run.runKind.label)
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(.quaternary, in: Capsule())
+                        }
+                    }
                 }
                 Spacer()
                 StatusBadge(status: run.status)
@@ -135,7 +199,7 @@ private struct RunDetailView: View {
             }
 
             HStack {
-                Button("Open PR") {
+                Button(run.prNumber == 0 ? "Open Repo" : "Open PR") {
                     if let url = URL(string: run.url) { NSWorkspace.shared.open(url) }
                 }
                 if let reportPath = run.reportPath, FileManager.default.fileExists(atPath: reportPath) {
@@ -213,7 +277,7 @@ struct LiveProgressView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
                 VStack(alignment: .leading, spacing: 4) {
-                    if let estimate = store.estimatedReviewDuration {
+                    if let estimate = store.estimatedDuration(for: run.runKind) {
                         ProgressView(value: min(elapsed / estimate, 1))
                         Text(etaText(elapsed: elapsed, estimate: estimate))
                             .font(.caption).foregroundStyle(.secondary)
