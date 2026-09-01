@@ -37,10 +37,12 @@ final class Poller: ObservableObject {
         guard !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
-        await poll()
+        await pollReviewRequests()
+        await pollDependabot()
+        await runDueDependencyUpdate()
     }
 
-    private func poll() async {
+    private func pollReviewRequests() async {
         var args = [
             "search", "prs", "--review-requested=@me", "--state=open",
             "--limit", "50", "--json", "number,title,url,updatedAt",
@@ -84,10 +86,110 @@ final class Poller: ObservableObject {
             // Mark seen immediately: failures are surfaced, never auto-retried.
             store.seen[key] = item.updatedAt
             AppLog.log("NEW review request: \(key) (\(item.title))")
-            let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url)
+            let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url, kind: .review)
             store.upsert(run)
             await review(run)
         }
+    }
+
+    /// Watch the configured repos for new Dependabot PRs and review each one
+    /// with the dependabot prompt (unattended: the review comment is posted
+    /// straight to the PR/Jira — see /review-dependabot-pr --auto).
+    private func pollDependabot() async {
+        guard AppSettings.dependabotEnabled else { return }
+        let repos = AppSettings.dependabotRepos
+        guard !repos.isEmpty else { return }
+
+        var args = [
+            "search", "prs", "--author", "app/dependabot", "--state=open",
+            "--limit", "50", "--json", "number,title,url,updatedAt",
+        ]
+        for repo in repos { args += ["--repo", repo] }
+        if !AppSettings.includeDrafts { args.append("--draft=false") }
+
+        let result = await ProcessRunner.run(AppSettings.ghPath, args, timeout: 60)
+        guard result.exitCode == 0, !result.timedOut,
+              let items = try? JSONDecoder().decode([GHPullRequest].self, from: result.stdout)
+        else {
+            let err = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            AppLog.log("Dependabot poll failed: \(String(err.prefix(300)))")
+            return
+        }
+
+        // Baseline per repo: a repo's pre-existing backlog is marked seen the
+        // first time it appears in the watch list — only PRs opened after that
+        // trigger reviews (same no-token-burn rule as review requests).
+        let newRepos = Set(repos).subtracting(store.dependabotBaselined)
+        if !newRepos.isEmpty {
+            var baselined = 0
+            for item in items {
+                guard let repo = item.repoFullName, let key = item.key,
+                      newRepos.contains(where: { $0.caseInsensitiveCompare(repo) == .orderedSame })
+                else { continue }
+                if store.seen[key] == nil {
+                    store.seen[key] = item.updatedAt
+                    baselined += 1
+                }
+            }
+            store.dependabotBaselined.formUnion(newRepos)
+            store.save()
+            AppLog.log("Dependabot: baselined \(baselined) existing PR(s) in \(newRepos.sorted().joined(separator: ", "))")
+            return
+        }
+
+        let newItems = items.filter { item in
+            guard let key = item.key else { return false }
+            return store.seen[key] == nil
+        }
+        if !newItems.isEmpty {
+            AppLog.log("Dependabot poll: \(items.count) open PR(s), \(newItems.count) new")
+        }
+        for item in newItems {
+            guard let repo = item.repoFullName, let key = item.key else { continue }
+            store.seen[key] = item.updatedAt
+            AppLog.log("NEW dependabot PR: \(key) (\(item.title))")
+            let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url, kind: .dependabot)
+            store.upsert(run)
+            await review(run)
+        }
+    }
+
+    /// Run at most one dependency-update scan per tick: the first configured
+    /// repo whose last scan is older than the configured interval.
+    private func runDueDependencyUpdate() async {
+        guard AppSettings.depUpdateEnabled else { return }
+        let interval = TimeInterval(AppSettings.depUpdateIntervalHours) * 3600
+        guard let repo = AppSettings.depUpdateRepos.first(where: { repo in
+            guard let last = store.depUpdateLastRun[repo] else { return true }
+            return Date().timeIntervalSince(last) >= interval
+        }) else { return }
+
+        await startDependencyScan(repo)
+    }
+
+    /// Manually trigger a dependency update scan from the UI, regardless of
+    /// the automatic schedule (and even when it is disabled).
+    func scanDependencies(_ repo: String) {
+        Task {
+            guard !isBusy else { return }
+            isBusy = true
+            defer { isBusy = false }
+            AppLog.log("Manual dependency update scan: \(repo)")
+            await startDependencyScan(repo)
+        }
+    }
+
+    private func startDependencyScan(_ repo: String) async {
+        // Stamp before running: a failed scan is surfaced in history, never
+        // silently retried every tick.
+        store.depUpdateLastRun[repo] = Date()
+        store.save()
+        AppLog.log("Dependency update scan: \(repo)")
+        let run = ReviewRun(
+            repo: repo, prNumber: 0, title: "Dependency update scan",
+            url: "https://github.com/\(repo)", kind: .dependencyUpdate)
+        store.upsert(run)
+        await review(run)
     }
 
     /// Re-run a review manually from the History window.
@@ -96,7 +198,9 @@ final class Poller: ObservableObject {
             guard !isBusy else { return }
             isBusy = true
             defer { isBusy = false }
-            let run = ReviewRun(repo: old.repo, prNumber: old.prNumber, title: old.title, url: old.url)
+            let run = ReviewRun(
+                repo: old.repo, prNumber: old.prNumber, title: old.title, url: old.url,
+                kind: old.runKind)
             store.upsert(run)
             await review(run)
         }
@@ -110,23 +214,42 @@ final class Poller: ObservableObject {
             run.finishedAt = Date()
             run.errorMessage = "No checkout matching \(run.repo) found under \(AppSettings.reposDir)"
             store.upsert(run)
-            notify("Review requested — no local repo", run.key)
+            notify("No local repo", run.key)
             return
+        }
+
+        let kindNoun: String
+        let promptTemplate: String
+        let allowedTools: String
+        switch run.runKind {
+        case .review:
+            kindNoun = "Review"
+            promptTemplate = AppSettings.promptTemplate
+            allowedTools = AppSettings.allowedTools
+        case .dependabot:
+            kindNoun = "Dependabot review"
+            promptTemplate = AppSettings.dependabotPromptTemplate
+            allowedTools = AppSettings.dependabotAllowedTools
+        case .dependencyUpdate:
+            kindNoun = "Dependency scan"
+            promptTemplate = AppSettings.depUpdatePromptTemplate
+            allowedTools = AppSettings.depUpdateAllowedTools
         }
 
         run.localRepoPath = localPath
         run.status = .running
         run.startedAt = Date()
-        store.currentActivity = "Reviewing \(run.key)"
+        store.currentActivity = "\(kindNoun): \(run.key)"
         store.upsert(run)
-        notify("Review started", run.key)
+        notify("\(kindNoun) started", run.key)
 
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        let fileName = "\(run.repo.replacingOccurrences(of: "/", with: "-"))-pr\(run.prNumber)-\(stamp).md"
+        let slug = run.runKind == .dependencyUpdate ? "deps" : "pr\(run.prNumber)"
+        let fileName = "\(run.repo.replacingOccurrences(of: "/", with: "-"))-\(slug)-\(stamp).md"
         let reportURL = store.reviewsDir.appendingPathComponent(fileName)
 
-        let prompt = AppSettings.promptTemplate
+        let prompt = promptTemplate
             .replacingOccurrences(of: "{url}", with: run.url)
             .replacingOccurrences(of: "{repo}", with: run.repo)
             .replacingOccurrences(of: "{number}", with: String(run.prNumber))
@@ -142,7 +265,7 @@ final class Poller: ObservableObject {
         let result = await ProcessRunner.run(
             AppSettings.claudePath,
             [
-                "-p", prompt, "--allowedTools", AppSettings.allowedTools,
+                "-p", prompt, "--allowedTools", allowedTools,
                 "--output-format", "stream-json", "--verbose",
             ],
             cwd: localPath,
@@ -173,15 +296,15 @@ final class Poller: ObservableObject {
         AppLog.log("Review finished: \(run.key) exit=\(result.exitCode) timedOut=\(result.timedOut) report=\(reportURL.lastPathComponent)")
         if result.timedOut {
             run.status = .timedOut
-            notify("Review timed out", run.key)
+            notify("\(kindNoun) timed out", run.key)
         } else if result.exitCode == 0 {
             run.status = .done
-            notify("Review finished", run.key)
+            notify("\(kindNoun) finished", run.key)
         } else {
             run.status = .failed
             let err = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             run.errorMessage = err.isEmpty ? nil : String(err.suffix(500))
-            notify("Review failed (exit \(result.exitCode))", run.key)
+            notify("\(kindNoun) failed (exit \(result.exitCode))", run.key)
         }
         store.currentActivity = nil
         store.upsert(run)
@@ -328,6 +451,27 @@ final class Poller: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// All local checkouts under reposDir with a GitHub origin, as owner/repo
+    /// (deduplicated case-insensitively, sorted). Feeds the repo pickers in
+    /// Settings so users select repos instead of typing them.
+    nonisolated static func localGitHubRepos() -> [String] {
+        let reposDir = AppSettings.reposDir
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: reposDir) else {
+            return []
+        }
+        var seen = Set<String>()
+        var result: [String] = []
+        for entry in entries.sorted() {
+            let configPath = (reposDir as NSString).appendingPathComponent(entry) + "/.git/config"
+            guard let text = try? String(contentsOfFile: configPath, encoding: .utf8),
+                  let name = originFullName(in: text),
+                  seen.insert(name.lowercased()).inserted
+            else { continue }
+            result.append(name)
+        }
+        return result.sorted { $0.lowercased() < $1.lowercased() }
     }
 
     nonisolated static func originFullName(in gitConfig: String) -> String? {

@@ -7,6 +7,20 @@ struct TodoItem: Codable, Hashable {
 }
 
 struct ReviewRun: Codable, Identifiable, Hashable {
+    enum Kind: String, Codable {
+        case review
+        case dependabot
+        case dependencyUpdate
+
+        var label: String {
+            switch self {
+            case .review: return "Review"
+            case .dependabot: return "Dependabot"
+            case .dependencyUpdate: return "Dep update"
+            }
+        }
+    }
+
     enum Status: String, Codable {
         case queued
         case running
@@ -32,6 +46,8 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var prNumber: Int
     var title: String
     var url: String
+    // Optional so state saved by older app versions still decodes.
+    var kind: Kind?
     var status: Status = .queued
     var detectedAt = Date()
     var startedAt: Date?
@@ -47,7 +63,11 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var numTurns: Int?
     var costUSD: Double?
 
-    var key: String { "\(repo)#\(prNumber)" }
+    var runKind: Kind { kind ?? .review }
+
+    var key: String {
+        runKind == .dependencyUpdate ? "\(repo) deps" : "\(repo)#\(prNumber)"
+    }
 
     var duration: TimeInterval? {
         guard let startedAt, let finishedAt else { return nil }

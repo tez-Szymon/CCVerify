@@ -1,9 +1,26 @@
 import SwiftUI
 
+/// The two run categories the UI splits into: requested reviews vs everything
+/// Dependabot-related (Dependabot PR reviews + dependency update scans).
+enum RunTab: String, CaseIterable, Identifiable {
+    case reviews = "Reviews"
+    case dependabot = "Dependabot"
+
+    var id: String { rawValue }
+
+    func matches(_ run: ReviewRun) -> Bool {
+        switch self {
+        case .reviews: return run.runKind == .review
+        case .dependabot: return run.runKind != .review
+        }
+    }
+}
+
 struct MenuContent: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var poller: Poller
     @Environment(\.openWindow) private var openWindow
+    @State private var tab: RunTab = .reviews
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -42,7 +59,7 @@ struct MenuContent: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
             VStack(alignment: .leading, spacing: 3) {
-                if let estimate = store.estimatedReviewDuration {
+                if let estimate = store.estimatedDuration(for: run.runKind) {
                     ProgressView(value: min(elapsed / estimate, 1))
                         .controlSize(.small)
                     Text("\(formatDuration(elapsed)) elapsed — ≈\(formatDuration(max(0, estimate - elapsed))) left")
@@ -86,22 +103,42 @@ struct MenuContent: View {
         return "Watching for review requests"
     }
 
+    private var tabRuns: [ReviewRun] {
+        store.runs.filter { tab.matches($0) }
+    }
+
     private var recentRuns: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Recent reviews").font(.caption).foregroundStyle(.secondary)
-            if store.runs.isEmpty {
-                Text("No reviews yet — you'll see them here when someone requests your review.")
+            Picker("", selection: $tab) {
+                ForEach(RunTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            if tab == .dependabot {
+                DependencyScanMenu()
+                    .controlSize(.small)
+            }
+            if tabRuns.isEmpty {
+                Text(tab == .reviews
+                    ? "No reviews yet — you'll see them here when someone requests your review."
+                    : "No Dependabot activity yet — enable Dependabot reviews or dependency update scans in Settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(store.runs.prefix(5)) { run in
+                ForEach(tabRuns.prefix(5)) { run in
                     Button {
                         openHistory()
                     } label: {
                         HStack(spacing: 6) {
                             StatusBadge(status: run.status, compact: true)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(run.key).font(.callout).lineLimit(1)
+                                HStack(spacing: 4) {
+                                    Text(run.key).font(.callout).lineLimit(1)
+                                    KindIcon(kind: run.runKind)
+                                }
                                 Text(run.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer()
@@ -123,7 +160,13 @@ struct MenuContent: View {
             Button("Poll now") { Task { await poller.tick(force: true) } }
                 .disabled(poller.isBusy)
             Spacer()
-            SettingsLink { Image(systemName: "gearshape") }
+            Button {
+                store.showingSettings = true
+                openHistory()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .help("Settings (⌘, in the app)")
             Button {
                 NSApp.terminate(nil)
             } label: {
@@ -137,6 +180,64 @@ struct MenuContent: View {
     private func openHistory() {
         openWindow(id: "history")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// On-demand trigger for the dependency update scan (/update-dependencies):
+/// one configured repo → a plain button, several → a menu, none → a hint.
+/// Works regardless of the automatic schedule toggle.
+struct DependencyScanMenu: View {
+    @EnvironmentObject var poller: Poller
+    // @AppStorage (not a static AppSettings read) so the button updates the
+    // moment repos are picked in Settings.
+    @AppStorage(AppSettings.Keys.depUpdateRepos) private var depUpdateReposRaw = ""
+
+    var body: some View {
+        let repos = AppSettings.repoList(depUpdateReposRaw)
+        if repos.isEmpty {
+            Text("Add repos under Settings → Updates to scan for safe upgrades.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if repos.count == 1 {
+            Button {
+                poller.scanDependencies(repos[0])
+            } label: {
+                Label("Scan \(repos[0]) for updates", systemImage: "arrow.up.square")
+            }
+            .disabled(poller.isBusy)
+            .help("Run /update-dependencies --auto now: find outdated packages and vulnerabilities, verify safe bumps, open a PR + Jira ticket if everything passes.")
+        } else {
+            Menu {
+                ForEach(repos, id: \.self) { repo in
+                    Button(repo) { poller.scanDependencies(repo) }
+                }
+            } label: {
+                Label("Scan for updates", systemImage: "arrow.up.square")
+            }
+            .disabled(poller.isBusy)
+            .help("Run /update-dependencies --auto for a repo now: find outdated packages and vulnerabilities, verify safe bumps, open a PR + Jira ticket if everything passes.")
+        }
+    }
+}
+
+/// Small marker distinguishing dependabot reviews and dependency scans from
+/// ordinary requested reviews (which get no icon — they're the common case).
+struct KindIcon: View {
+    let kind: ReviewRun.Kind
+
+    var body: some View {
+        switch kind {
+        case .review:
+            EmptyView()
+        case .dependabot:
+            Image(systemName: "shippingbox")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("Dependabot PR review")
+        case .dependencyUpdate:
+            Image(systemName: "arrow.up.square")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("Dependency update scan")
+        }
     }
 }
 

@@ -6,12 +6,20 @@ final class AppStore: ObservableObject {
     @Published var runs: [ReviewRun] = []
     @Published var seen: [String: String] = [:]
     @Published var hasBaselined = false
+    // Repos whose pre-existing Dependabot PR backlog has been marked seen
+    // (baselined per repo, so repos added to the watch list later get their
+    // own baseline instead of a review storm).
+    @Published var dependabotBaselined: Set<String> = []
+    // Last dependency-update scan per repo (owner/repo → date).
+    @Published var depUpdateLastRun: [String: Date] = [:]
     @Published var lastPollAt: Date?
     @Published var lastPollError: String?
     @Published var currentActivity: String?
     @Published var isPaused: Bool {
         didSet { UserDefaults.standard.set(isPaused, forKey: "isPaused") }
     }
+    // Main window shows settings in place of the run history (not persisted).
+    @Published var showingSettings = false
 
     var reviewsDir: URL { AppPaths.reviews }
     private var stateFile: URL { AppPaths.stateFile }
@@ -20,6 +28,9 @@ final class AppStore: ObservableObject {
         var runs: [ReviewRun]
         var seen: [String: String]
         var hasBaselined: Bool
+        // Optional so state saved by older app versions still decodes.
+        var dependabotBaselined: Set<String>?
+        var depUpdateLastRun: [String: Date]?
     }
 
     init() {
@@ -43,10 +54,14 @@ final class AppStore: ObservableObject {
         }
         seen = state.seen
         hasBaselined = state.hasBaselined
+        dependabotBaselined = state.dependabotBaselined ?? []
+        depUpdateLastRun = state.depUpdateLastRun ?? [:]
     }
 
     func save() {
-        let state = PersistedState(runs: Array(runs.prefix(200)), seen: seen, hasBaselined: hasBaselined)
+        let state = PersistedState(
+            runs: Array(runs.prefix(200)), seen: seen, hasBaselined: hasBaselined,
+            dependabotBaselined: dependabotBaselined, depUpdateLastRun: depUpdateLastRun)
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         try? data.write(to: stateFile, options: .atomic)
@@ -68,10 +83,11 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Median duration of recent successful reviews; nil until one has finished.
-    var estimatedReviewDuration: TimeInterval? {
+    /// Median duration of recent successful runs of the same kind; nil until
+    /// one has finished (reviews and dependency scans pace very differently).
+    func estimatedDuration(for kind: ReviewRun.Kind) -> TimeInterval? {
         let durations = runs.lazy
-            .filter { $0.status == .done }
+            .filter { $0.status == .done && $0.runKind == kind }
             .compactMap(\.duration)
             .prefix(10)
             .sorted()

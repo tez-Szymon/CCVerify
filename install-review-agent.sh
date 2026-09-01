@@ -23,10 +23,15 @@ install_file() {
   echo "installed:   ~${dst#"$HOME"}"
 }
 
-install_file "$ROOT/claude/commands/review-pr.md" "$HOME/.claude/commands/review-pr.md"
+for cmd in "$ROOT"/claude/commands/*.md; do
+  install_file "$cmd" "$HOME/.claude/commands/$(basename "$cmd")"
+done
 for agent in "$ROOT"/claude/agents/pr-reviewer-*.md; do
   install_file "$agent" "$HOME/.claude/agents/$(basename "$agent")"
 done
 
 echo
-echo "Done. CCVerify's default prompt (/review-pr {url} --publish) now resolves."
+echo "Done. CCVerify's prompts now resolve:"
+echo "  /review-pr {url} --publish            (review requests)"
+echo "  /review-dependabot-pr {number} --auto (Dependabot PRs)"
+echo "  /update-dependencies --auto           (dependency update scans)"
