@@ -62,6 +62,7 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     // @AppStorage so the menu picks up repos checked in Settings immediately.
     @AppStorage(AppSettings.Keys.depUpdateRepos) private var depUpdateReposRaw = ""
+    @AppStorage(AppSettings.Keys.ticketAnalysisRepos) private var ticketAnalysisReposRaw = ""
 
     var body: some Commands {
         // Settings live inside the main window now — point ⌘, there instead
@@ -100,6 +101,19 @@ struct AppCommands: Commands {
                 Menu("Scan for Updates") {
                     ForEach(repos, id: \.self) { repo in
                         Button(repo) { poller.scanDependencies(repo) }
+                    }
+                }
+                .disabled(poller.isBusy)
+            }
+
+            let ticketRepos = AppSettings.repoList(ticketAnalysisReposRaw)
+            if ticketRepos.isEmpty {
+                Button("Analyze Major Tickets (add repos in Settings)") {}
+                    .disabled(true)
+            } else {
+                Menu("Analyze Major Tickets") {
+                    ForEach(ticketRepos, id: \.self) { repo in
+                        Button(repo) { poller.analyzeTickets(repo) }
                     }
                 }
                 .disabled(poller.isBusy)

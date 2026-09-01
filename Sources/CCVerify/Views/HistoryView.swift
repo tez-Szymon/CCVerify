@@ -199,7 +199,7 @@ private struct RunDetailView: View {
             }
 
             HStack {
-                Button(run.runKind == .dependencyUpdate ? "Open Repo" : "Open PR") {
+                Button(run.prNumber == 0 ? "Open Repo" : "Open PR") {
                     if let url = URL(string: run.url) { NSWorkspace.shared.open(url) }
                 }
                 if let reportPath = run.reportPath, FileManager.default.fileExists(atPath: reportPath) {

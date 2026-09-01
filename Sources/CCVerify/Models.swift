@@ -11,12 +11,14 @@ struct ReviewRun: Codable, Identifiable, Hashable {
         case review
         case dependabot
         case dependencyUpdate
+        case ticketAnalysis
 
         var label: String {
             switch self {
             case .review: return "Review"
             case .dependabot: return "Dependabot"
             case .dependencyUpdate: return "Dep update"
+            case .ticketAnalysis: return "Ticket deep-dive"
             }
         }
     }
@@ -66,7 +68,11 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var runKind: Kind { kind ?? .review }
 
     var key: String {
-        runKind == .dependencyUpdate ? "\(repo) deps" : "\(repo)#\(prNumber)"
+        switch runKind {
+        case .dependencyUpdate: return "\(repo) deps"
+        case .ticketAnalysis: return "\(repo) tickets"
+        case .review, .dependabot: return "\(repo)#\(prNumber)"
+        }
     }
 
     var duration: TimeInterval? {

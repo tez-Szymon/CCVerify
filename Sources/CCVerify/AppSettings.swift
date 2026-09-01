@@ -26,6 +26,8 @@ enum AppSettings {
     // /update-dependencies --auto works in a throwaway worktree but must be able
     // to edit manifests, commit, push its own branch, open a PR, and file a Jira
     // ticket. It never pushes to existing branches (enforced by the command).
+    // Step 8 (major backlog tickets) additionally dedupes via JQL, comments on
+    // existing tickets, and clears their dep-analyzed label on version drift.
     static let defaultDepUpdateAllowedTools = [
         defaultAllowedTools,
         "Edit",
@@ -35,6 +37,22 @@ enum AppSettings {
         "Bash(yarn:*)", "Bash(npm:*)", "Bash(pnpm:*)", "Bash(npx:*)", "Bash(dotnet:*)",
         "mcp__atlassian__createJiraIssue", "mcp__atlassian__getVisibleJiraProjects",
         "mcp__atlassian__getJiraProjectIssueTypesMetadata",
+        "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__addCommentToJiraIssue",
+        "mcp__atlassian__editJiraIssue",
+    ].joined(separator: ",")
+
+    // /analyze-dep-tickets --auto deep-dives dep-major Jira tickets: JQL
+    // discovery, ticket read/comment/label, trial upgrade in a throwaway
+    // worktree, and — on a SAFE verdict — a deps/major-* branch + PR.
+    static let defaultTicketAnalysisAllowedTools = [
+        defaultAllowedTools,
+        "Edit",
+        "Bash(gh pr list:*)", "Bash(gh pr create:*)",
+        "Bash(git worktree:*)", "Bash(git rev-list:*)", "Bash(git add:*)",
+        "Bash(git commit:*)", "Bash(git push origin deps/:*)", "Bash(git checkout:*)",
+        "Bash(yarn:*)", "Bash(npm:*)", "Bash(pnpm:*)", "Bash(npx:*)", "Bash(dotnet:*)",
+        "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__getJiraIssue",
+        "mcp__atlassian__addCommentToJiraIssue", "mcp__atlassian__editJiraIssue",
     ].joined(separator: ",")
 
     static func registerDefaults() {
@@ -57,6 +75,11 @@ enum AppSettings {
             Keys.depUpdateIntervalHours: 24,
             Keys.depUpdatePromptTemplate: "/update-dependencies --auto",
             Keys.depUpdateAllowedTools: defaultDepUpdateAllowedTools,
+            Keys.ticketAnalysisEnabled: false,
+            Keys.ticketAnalysisRepos: "",
+            Keys.ticketAnalysisIntervalHours: 24,
+            Keys.ticketAnalysisPromptTemplate: "/analyze-dep-tickets --auto",
+            Keys.ticketAnalysisAllowedTools: defaultTicketAnalysisAllowedTools,
         ])
     }
 
@@ -79,6 +102,11 @@ enum AppSettings {
         static let depUpdateIntervalHours = "depUpdateIntervalHours"
         static let depUpdatePromptTemplate = "depUpdatePromptTemplate"
         static let depUpdateAllowedTools = "depUpdateAllowedTools"
+        static let ticketAnalysisEnabled = "ticketAnalysisEnabled"
+        static let ticketAnalysisRepos = "ticketAnalysisRepos"
+        static let ticketAnalysisIntervalHours = "ticketAnalysisIntervalHours"
+        static let ticketAnalysisPromptTemplate = "ticketAnalysisPromptTemplate"
+        static let ticketAnalysisAllowedTools = "ticketAnalysisAllowedTools"
     }
 
     private static var d: UserDefaults { .standard }
@@ -110,6 +138,16 @@ enum AppSettings {
     }
     static var depUpdateAllowedTools: String {
         d.string(forKey: Keys.depUpdateAllowedTools) ?? defaultDepUpdateAllowedTools
+    }
+
+    static var ticketAnalysisEnabled: Bool { d.bool(forKey: Keys.ticketAnalysisEnabled) }
+    static var ticketAnalysisRepos: [String] { repoList(d.string(forKey: Keys.ticketAnalysisRepos) ?? "") }
+    static var ticketAnalysisIntervalHours: Int { max(1, d.integer(forKey: Keys.ticketAnalysisIntervalHours)) }
+    static var ticketAnalysisPromptTemplate: String {
+        d.string(forKey: Keys.ticketAnalysisPromptTemplate) ?? "/analyze-dep-tickets --auto"
+    }
+    static var ticketAnalysisAllowedTools: String {
+        d.string(forKey: Keys.ticketAnalysisAllowedTools) ?? defaultTicketAnalysisAllowedTools
     }
 
     /// Parse a user-entered repo list ("owner/repo, owner/repo2" or one per line).

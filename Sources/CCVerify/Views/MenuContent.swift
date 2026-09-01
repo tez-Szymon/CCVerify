@@ -120,6 +120,8 @@ struct MenuContent: View {
             if tab == .dependabot {
                 DependencyScanMenu()
                     .controlSize(.small)
+                TicketAnalysisMenu()
+                    .controlSize(.small)
             }
             if tabRuns.isEmpty {
                 Text(tab == .reviews
@@ -220,6 +222,40 @@ struct DependencyScanMenu: View {
     }
 }
 
+/// On-demand trigger for the dep-major ticket deep-dive (/analyze-dep-tickets):
+/// one configured repo → a plain button, several → a menu, none → nothing
+/// (the Settings tab explains the feature; no second hint needed here).
+/// Works regardless of the automatic schedule toggle.
+struct TicketAnalysisMenu: View {
+    @EnvironmentObject var poller: Poller
+    // @AppStorage (not a static AppSettings read) so the button updates the
+    // moment repos are picked in Settings.
+    @AppStorage(AppSettings.Keys.ticketAnalysisRepos) private var ticketAnalysisReposRaw = ""
+
+    var body: some View {
+        let repos = AppSettings.repoList(ticketAnalysisReposRaw)
+        if repos.count == 1 {
+            Button {
+                poller.analyzeTickets(repos[0])
+            } label: {
+                Label("Analyze \(repos[0]) major tickets", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(poller.isBusy)
+            .help("Run /analyze-dep-tickets --auto now: deep-dive open dep-major Jira tickets, post the analysis as a comment, open a PR when the upgrade proves safe.")
+        } else if repos.count > 1 {
+            Menu {
+                ForEach(repos, id: \.self) { repo in
+                    Button(repo) { poller.analyzeTickets(repo) }
+                }
+            } label: {
+                Label("Analyze major tickets", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(poller.isBusy)
+            .help("Run /analyze-dep-tickets --auto for a repo now: deep-dive open dep-major Jira tickets, post the analysis as a comment, open a PR when the upgrade proves safe.")
+        }
+    }
+}
+
 /// Small marker distinguishing dependabot reviews and dependency scans from
 /// ordinary requested reviews (which get no icon — they're the common case).
 struct KindIcon: View {
@@ -237,6 +273,10 @@ struct KindIcon: View {
             Image(systemName: "arrow.up.square")
                 .font(.caption2).foregroundStyle(.secondary)
                 .help("Dependency update scan")
+        case .ticketAnalysis:
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("Major ticket deep-dive")
         }
     }
 }

@@ -12,6 +12,8 @@ final class AppStore: ObservableObject {
     @Published var dependabotBaselined: Set<String> = []
     // Last dependency-update scan per repo (owner/repo → date).
     @Published var depUpdateLastRun: [String: Date] = [:]
+    // Last dep-major ticket deep-dive per repo (owner/repo → date).
+    @Published var ticketAnalysisLastRun: [String: Date] = [:]
     @Published var lastPollAt: Date?
     @Published var lastPollError: String?
     @Published var currentActivity: String?
@@ -31,6 +33,7 @@ final class AppStore: ObservableObject {
         // Optional so state saved by older app versions still decodes.
         var dependabotBaselined: Set<String>?
         var depUpdateLastRun: [String: Date]?
+        var ticketAnalysisLastRun: [String: Date]?
     }
 
     init() {
@@ -56,12 +59,14 @@ final class AppStore: ObservableObject {
         hasBaselined = state.hasBaselined
         dependabotBaselined = state.dependabotBaselined ?? []
         depUpdateLastRun = state.depUpdateLastRun ?? [:]
+        ticketAnalysisLastRun = state.ticketAnalysisLastRun ?? [:]
     }
 
     func save() {
         let state = PersistedState(
             runs: Array(runs.prefix(200)), seen: seen, hasBaselined: hasBaselined,
-            dependabotBaselined: dependabotBaselined, depUpdateLastRun: depUpdateLastRun)
+            dependabotBaselined: dependabotBaselined, depUpdateLastRun: depUpdateLastRun,
+            ticketAnalysisLastRun: ticketAnalysisLastRun)
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         try? data.write(to: stateFile, options: .atomic)

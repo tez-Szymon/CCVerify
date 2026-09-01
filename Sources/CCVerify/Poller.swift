@@ -40,6 +40,7 @@ final class Poller: ObservableObject {
         await pollReviewRequests()
         await pollDependabot()
         await runDueDependencyUpdate()
+        await runDueTicketAnalysis()
     }
 
     private func pollReviewRequests() async {
@@ -192,6 +193,46 @@ final class Poller: ObservableObject {
         await review(run)
     }
 
+    /// Run at most one dep-major ticket deep-dive per tick: the first
+    /// configured repo whose last analysis is older than the interval.
+    /// Discovery of the actual tickets (JQL for open dep-major tickets
+    /// without the dep-analyzed label) happens inside the command — the app
+    /// itself never talks to Jira.
+    private func runDueTicketAnalysis() async {
+        guard AppSettings.ticketAnalysisEnabled else { return }
+        let interval = TimeInterval(AppSettings.ticketAnalysisIntervalHours) * 3600
+        guard let repo = AppSettings.ticketAnalysisRepos.first(where: { repo in
+            guard let last = store.ticketAnalysisLastRun[repo] else { return true }
+            return Date().timeIntervalSince(last) >= interval
+        }) else { return }
+
+        await startTicketAnalysis(repo)
+    }
+
+    /// Manually trigger a ticket deep-dive from the UI, regardless of the
+    /// automatic schedule (and even when it is disabled).
+    func analyzeTickets(_ repo: String) {
+        Task {
+            guard !isBusy else { return }
+            isBusy = true
+            defer { isBusy = false }
+            AppLog.log("Manual ticket deep-dive: \(repo)")
+            await startTicketAnalysis(repo)
+        }
+    }
+
+    private func startTicketAnalysis(_ repo: String) async {
+        // Same stamp-before-run rule as dependency scans.
+        store.ticketAnalysisLastRun[repo] = Date()
+        store.save()
+        AppLog.log("Ticket deep-dive: \(repo)")
+        let run = ReviewRun(
+            repo: repo, prNumber: 0, title: "Major ticket deep-dive",
+            url: "https://github.com/\(repo)", kind: .ticketAnalysis)
+        store.upsert(run)
+        await review(run)
+    }
+
     /// Re-run a review manually from the History window.
     func rerun(_ old: ReviewRun) {
         Task {
@@ -234,6 +275,10 @@ final class Poller: ObservableObject {
             kindNoun = "Dependency scan"
             promptTemplate = AppSettings.depUpdatePromptTemplate
             allowedTools = AppSettings.depUpdateAllowedTools
+        case .ticketAnalysis:
+            kindNoun = "Ticket deep-dive"
+            promptTemplate = AppSettings.ticketAnalysisPromptTemplate
+            allowedTools = AppSettings.ticketAnalysisAllowedTools
         }
 
         run.localRepoPath = localPath
@@ -245,7 +290,12 @@ final class Poller: ObservableObject {
 
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        let slug = run.runKind == .dependencyUpdate ? "deps" : "pr\(run.prNumber)"
+        let slug: String
+        switch run.runKind {
+        case .dependencyUpdate: slug = "deps"
+        case .ticketAnalysis: slug = "tickets"
+        case .review, .dependabot: slug = "pr\(run.prNumber)"
+        }
         let fileName = "\(run.repo.replacingOccurrences(of: "/", with: "-"))-\(slug)-\(stamp).md"
         let reportURL = store.reviewsDir.appendingPathComponent(fileName)
 

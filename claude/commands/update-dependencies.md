@@ -112,12 +112,13 @@ approval covering the PR, the updates ticket, and step 8's major tickets.
 
 Known projects:
 
-| Repo | Jira project | Cloud ID |
-|---|---|---|
-| `teztechnology/text2park.web` | `PRK` | `108a72cf-a3ed-4303-95da-07d7fa0fa6ee` |
-| `teztechnology/text2park.backend` | `PRK` | `108a72cf-a3ed-4303-95da-07d7fa0fa6ee` |
+| Repo | Jira project | Cloud ID | Epic (parent) |
+|---|---|---|---|
+| `teztechnology/text2park.web` | `PRK` | `108a72cf-a3ed-4303-95da-07d7fa0fa6ee` | `PRK-209` |
+| `teztechnology/text2park.backend` | `PRK` | `108a72cf-a3ed-4303-95da-07d7fa0fa6ee` | `PRK-209` |
 
-Create via `mcp__atlassian__createJiraIssue` (Task type): summary
+Create via `mcp__atlassian__createJiraIssue` (Task type, parented under the
+epic from the table when one is set): summary
 `Dependency updates <repo> <YYYY-MM-DD>`, description = the bumps table plus
 a `**PR:** <url>` link. Then edit the PR body to reference the ticket key.
 If the repo isn't in the table or the Atlassian tools aren't available in
@@ -140,9 +141,13 @@ when steps 5–7 produced nothing.
   `project = <KEY> AND labels = dep-major AND statusCategory != Done AND summary ~ "<package>"`.
   An open ticket for the package/group → don't create a duplicate; if the
   available version moved on since (e.g. 52.x → 53.x), add a short comment
-  with the new version instead. Closed-as-done ticket + a new major out →
+  with the new version instead — and if the ticket carries the
+  `dep-analyzed` label (a `/analyze-dep-tickets` deep dive already ran),
+  remove that label via `editJiraIssue` so the ticket gets re-analyzed
+  against the new version. Closed-as-done ticket + a new major out →
   a new ticket is correct.
-- **Ticket shape** (Task type; follow the repo's Jira title conventions from
+- **Ticket shape** (Task type, parented under the step 7 epic when one is
+  set; follow the repo's Jira title conventions from
   its `CLAUDE.md` when defined, else this default): summary
   `Dependency major: <package or group> <current> → <latest> (<repo>)`;
   description = current vs latest versions, links to release notes /
@@ -152,6 +157,11 @@ when steps 5–7 produced nothing.
   no PR.
 - If the repo has no Jira mapping (step 7 table) or Atlassian tools are
   unavailable, skip and say so in the report — same rule as step 7.
+
+These tickets don't just sit in the backlog: `/analyze-dep-tickets` (run on
+its own schedule by CCVerify) picks up every open `dep-major` ticket without
+a `dep-analyzed` label, deep-dives the major against the codebase, posts the
+analysis as a ticket comment, and opens a PR when the upgrade proves safe.
 
 ### 9. Cleanup and report
 
