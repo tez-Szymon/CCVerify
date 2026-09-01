@@ -34,14 +34,26 @@ struct MenuContent: View {
         .frame(width: 340)
     }
 
+    private var runningRuns: [ReviewRun] {
+        store.runs.filter { $0.status == .running }
+    }
+
+    private var queuedCount: Int {
+        store.runs.lazy.filter { $0.status == .queued }.count
+    }
+
     private var statusHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle().fill(statusColor).frame(width: 8, height: 8)
                 Text(statusText).font(.headline)
             }
-            if let running = store.runs.first(where: { $0.status == .running }) {
-                liveProgress(for: running)
+            ForEach(runningRuns.prefix(3)) { running in
+                liveProgress(for: running, showKey: runningRuns.count > 1)
+            }
+            if queuedCount > 0 {
+                Text("\(queuedCount) run\(queuedCount == 1 ? "" : "s") queued")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             if let lastPoll = store.lastPollAt {
                 Text("Last poll: \(lastPoll.formatted(date: .omitted, time: .standard))")
@@ -55,10 +67,14 @@ struct MenuContent: View {
         }
     }
 
-    private func liveProgress(for run: ReviewRun) -> some View {
+    private func liveProgress(for run: ReviewRun, showKey: Bool = false) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
             VStack(alignment: .leading, spacing: 3) {
+                if showKey {
+                    Text("\(run.runKind.label): \(run.key)")
+                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if let estimate = store.estimatedDuration(for: run.runKind) {
                     ProgressView(value: min(elapsed / estimate, 1))
                         .controlSize(.small)
@@ -91,13 +107,17 @@ struct MenuContent: View {
 
     private var statusColor: Color {
         if store.isPaused { return .orange }
-        if store.currentActivity != nil { return .blue }
+        if !runningRuns.isEmpty { return .blue }
         if store.lastPollError != nil { return .red }
         return .green
     }
 
     private var statusText: String {
-        if let activity = store.currentActivity { return activity }
+        let running = runningRuns
+        if running.count == 1, let run = running.first {
+            return "\(run.runKind.label): \(run.key)"
+        }
+        if running.count > 1 { return "Running \(running.count) agents" }
         if store.isPaused { return "Paused" }
         if store.lastPollError != nil { return "Poll error" }
         return "Watching for review requests"
@@ -160,7 +180,7 @@ struct MenuContent: View {
             Button("History") { openHistory() }
             Button(store.isPaused ? "Resume" : "Pause") { store.isPaused.toggle() }
             Button("Poll now") { Task { await poller.tick(force: true) } }
-                .disabled(poller.isBusy)
+                .disabled(poller.isPolling)
             Spacer()
             Button {
                 store.showingSettings = true
@@ -206,17 +226,17 @@ struct DependencyScanMenu: View {
             } label: {
                 Label("Scan \(repos[0]) for updates", systemImage: "arrow.up.square")
             }
-            .disabled(poller.isBusy)
+            .disabled(poller.isActive(.dependencyUpdate, repo: repos[0]))
             .help("Run /update-dependencies --auto now: find outdated packages and vulnerabilities, verify safe bumps, open a PR + Jira ticket if everything passes.")
         } else {
             Menu {
                 ForEach(repos, id: \.self) { repo in
                     Button(repo) { poller.scanDependencies(repo) }
+                        .disabled(poller.isActive(.dependencyUpdate, repo: repo))
                 }
             } label: {
                 Label("Scan for updates", systemImage: "arrow.up.square")
             }
-            .disabled(poller.isBusy)
             .help("Run /update-dependencies --auto for a repo now: find outdated packages and vulnerabilities, verify safe bumps, open a PR + Jira ticket if everything passes.")
         }
     }
@@ -240,17 +260,17 @@ struct TicketAnalysisMenu: View {
             } label: {
                 Label("Analyze \(repos[0]) major tickets", systemImage: "doc.text.magnifyingglass")
             }
-            .disabled(poller.isBusy)
+            .disabled(poller.isActive(.ticketAnalysis, repo: repos[0]))
             .help("Run /analyze-dep-tickets --auto now: deep-dive open dep-major Jira tickets, post the analysis as a comment, open a PR when the upgrade proves safe.")
         } else if repos.count > 1 {
             Menu {
                 ForEach(repos, id: \.self) { repo in
                     Button(repo) { poller.analyzeTickets(repo) }
+                        .disabled(poller.isActive(.ticketAnalysis, repo: repo))
                 }
             } label: {
                 Label("Analyze major tickets", systemImage: "doc.text.magnifyingglass")
             }
-            .disabled(poller.isBusy)
             .help("Run /analyze-dep-tickets --auto for a repo now: deep-dive open dep-major Jira tickets, post the analysis as a comment, open a PR when the upgrade proves safe.")
         }
     }

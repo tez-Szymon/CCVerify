@@ -16,7 +16,6 @@ final class AppStore: ObservableObject {
     @Published var ticketAnalysisLastRun: [String: Date] = [:]
     @Published var lastPollAt: Date?
     @Published var lastPollError: String?
-    @Published var currentActivity: String?
     @Published var isPaused: Bool {
         didSet { UserDefaults.standard.set(isPaused, forKey: "isPaused") }
     }

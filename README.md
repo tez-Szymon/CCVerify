@@ -148,11 +148,13 @@ points at the new path.
   publishing needs (`gh pr review`, `gh pr comment`, `gh api`) plus `Write`
   (for review payload files) are allowed — the review cannot run arbitrary
   shell commands.
-- Reviews run sequentially; a timeout (default 40 min) kills runaways.
+- Runs execute in parallel up to a configurable agent cap (default 3, Settings
+  → General); further runs queue. The same PR/scan is never started twice
+  concurrently, and a timeout (default 40 min) kills runaways.
 - **Dependabot, update scans & ticket deep-dives are opt-in** (off by
   default) and scoped to an explicit repo list. Pre-existing Dependabot PRs
-  are baselined (seen, not reviewed); scans and deep-dives run at most one
-  repo per poll tick. Each run kind has its own allowlist: dependabot reviews
+  are baselined (seen, not reviewed); due scans and deep-dives queue behind
+  the agent cap. Each run kind has its own allowlist: dependabot reviews
   add worktree + package-manager commands and Jira commenting; update scans
   additionally allow `Edit`, commits, pushes restricted to `deps/*` branches,
   `gh pr create`, and Jira issue creation; ticket deep-dives get Jira

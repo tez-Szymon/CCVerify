@@ -79,8 +79,8 @@ Mixed PRs take the deepest applicable mode (`FULL_CHECKS` > `DOCKERFILE` > `ANAL
 
 ```bash
 git fetch origin <headRefName> <base>
-git worktree add /tmp/depreview-<n> origin/<headRefName>
-cd /tmp/depreview-<n>   # run all verification here
+git worktree add /tmp/depreview-<repo>-<n> origin/<headRefName>
+cd /tmp/depreview-<repo>-<n>   # run all verification here
 ```
 
 Also record drift: `git rev-list --count origin/<headRefName>..origin/<base>`.
@@ -88,7 +88,7 @@ If > 0, note "branch is N commits behind <base>" in the review (interactive
 mode may offer a rebase; `--auto` never rebases — recommend commenting
 `@dependabot rebase` instead).
 
-When done, always clean up: `git worktree remove /tmp/depreview-<n> --force`.
+When done, always clean up: `git worktree remove /tmp/depreview-<repo>-<n> --force`.
 
 Verification outcomes:
 - All green → proceed to drafting.

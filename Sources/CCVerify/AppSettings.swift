@@ -58,6 +58,7 @@ enum AppSettings {
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             Keys.pollIntervalSecs: 120,
+            Keys.maxConcurrentRuns: 3,
             Keys.reposDir: ("~/Documents/Repos" as NSString).expandingTildeInPath,
             Keys.ghPath: "/opt/homebrew/bin/gh",
             Keys.claudePath: ("~/.local/bin/claude" as NSString).expandingTildeInPath,
@@ -85,6 +86,7 @@ enum AppSettings {
 
     enum Keys {
         static let pollIntervalSecs = "pollIntervalSecs"
+        static let maxConcurrentRuns = "maxConcurrentRuns"
         static let reposDir = "reposDir"
         static let ghPath = "ghPath"
         static let claudePath = "claudePath"
@@ -112,6 +114,7 @@ enum AppSettings {
     private static var d: UserDefaults { .standard }
 
     static var pollIntervalSecs: Int { max(30, d.integer(forKey: Keys.pollIntervalSecs)) }
+    static var maxConcurrentRuns: Int { max(1, d.integer(forKey: Keys.maxConcurrentRuns)) }
     static var reposDir: String { d.string(forKey: Keys.reposDir) ?? "" }
     static var ghPath: String { d.string(forKey: Keys.ghPath) ?? "/opt/homebrew/bin/gh" }
     static var claudePath: String { d.string(forKey: Keys.claudePath) ?? "" }

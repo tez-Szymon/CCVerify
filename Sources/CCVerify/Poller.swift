@@ -4,7 +4,15 @@ import SwiftUI
 @MainActor
 final class Poller: ObservableObject {
     let store: AppStore
-    @Published var isBusy = false
+    /// True while a tick's gh polls / schedule checks run. Reviews themselves
+    /// execute detached from the tick, so a long agent run never blocks polling.
+    @Published var isPolling = false
+    /// Keys of runs currently queued or executing — the same work is never
+    /// started twice concurrently, and per-repo trigger buttons disable off it.
+    @Published private(set) var activeKeys: Set<String> = []
+    // Runs admitted but waiting for a free agent slot (maxConcurrentRuns).
+    private var pendingRuns: [ReviewRun] = []
+    private var executingCount = 0
     private var loopTask: Task<Void, Never>?
     // Per-run report text captured from the stream's final `result` event,
     // with concatenated assistant text as fallback if that event never comes.
@@ -34,13 +42,50 @@ final class Poller: ObservableObject {
 
     func tick(force: Bool = false) async {
         if store.isPaused && !force { return }
-        guard !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
+        guard !isPolling else { return }
+        isPolling = true
+        defer { isPolling = false }
         await pollReviewRequests()
         await pollDependabot()
-        await runDueDependencyUpdate()
-        await runDueTicketAnalysis()
+        enqueueDueDependencyUpdates()
+        enqueueDueTicketAnalyses()
+    }
+
+    // MARK: - Run queue
+
+    /// Whether the given work is already queued or executing.
+    func isActive(_ kind: ReviewRun.Kind, repo: String, prNumber: Int = 0) -> Bool {
+        activeKeys.contains(ReviewRun.key(kind: kind, repo: repo, prNumber: prNumber))
+    }
+
+    func isActive(key: String) -> Bool { activeKeys.contains(key) }
+
+    /// Admit a run: duplicates of an already queued/executing key are dropped,
+    /// everything else starts as soon as an agent slot is free.
+    private func enqueue(_ run: ReviewRun) {
+        guard !activeKeys.contains(run.key) else {
+            AppLog.log("Skipped \(run.key): the same run is already queued or executing")
+            return
+        }
+        activeKeys.insert(run.key)
+        store.upsert(run)
+        pendingRuns.append(run)
+        pump()
+    }
+
+    /// Start queued runs while there are free agent slots.
+    private func pump() {
+        while executingCount < AppSettings.maxConcurrentRuns, !pendingRuns.isEmpty {
+            let run = pendingRuns.removeFirst()
+            executingCount += 1
+            Task { [weak self] in
+                await self?.review(run)
+                guard let self else { return }
+                self.executingCount -= 1
+                self.activeKeys.remove(run.key)
+                self.pump()
+            }
+        }
     }
 
     private func pollReviewRequests() async {
@@ -88,8 +133,7 @@ final class Poller: ObservableObject {
             store.seen[key] = item.updatedAt
             AppLog.log("NEW review request: \(key) (\(item.title))")
             let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url, kind: .review)
-            store.upsert(run)
-            await review(run)
+            enqueue(run)
         }
     }
 
@@ -150,37 +194,30 @@ final class Poller: ObservableObject {
             store.seen[key] = item.updatedAt
             AppLog.log("NEW dependabot PR: \(key) (\(item.title))")
             let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url, kind: .dependabot)
-            store.upsert(run)
-            await review(run)
+            enqueue(run)
         }
     }
 
-    /// Run at most one dependency-update scan per tick: the first configured
-    /// repo whose last scan is older than the configured interval.
-    private func runDueDependencyUpdate() async {
+    /// Enqueue a dependency-update scan for every configured repo whose last
+    /// scan is older than the configured interval; the agent-slot cap paces them.
+    private func enqueueDueDependencyUpdates() {
         guard AppSettings.depUpdateEnabled else { return }
         let interval = TimeInterval(AppSettings.depUpdateIntervalHours) * 3600
-        guard let repo = AppSettings.depUpdateRepos.first(where: { repo in
-            guard let last = store.depUpdateLastRun[repo] else { return true }
-            return Date().timeIntervalSince(last) >= interval
-        }) else { return }
-
-        await startDependencyScan(repo)
+        for repo in AppSettings.depUpdateRepos {
+            if let last = store.depUpdateLastRun[repo],
+               Date().timeIntervalSince(last) < interval { continue }
+            startDependencyScan(repo)
+        }
     }
 
     /// Manually trigger a dependency update scan from the UI, regardless of
     /// the automatic schedule (and even when it is disabled).
     func scanDependencies(_ repo: String) {
-        Task {
-            guard !isBusy else { return }
-            isBusy = true
-            defer { isBusy = false }
-            AppLog.log("Manual dependency update scan: \(repo)")
-            await startDependencyScan(repo)
-        }
+        AppLog.log("Manual dependency update scan: \(repo)")
+        startDependencyScan(repo)
     }
 
-    private func startDependencyScan(_ repo: String) async {
+    private func startDependencyScan(_ repo: String) {
         // Stamp before running: a failed scan is surfaced in history, never
         // silently retried every tick.
         store.depUpdateLastRun[repo] = Date()
@@ -189,39 +226,32 @@ final class Poller: ObservableObject {
         let run = ReviewRun(
             repo: repo, prNumber: 0, title: "Dependency update scan",
             url: "https://github.com/\(repo)", kind: .dependencyUpdate)
-        store.upsert(run)
-        await review(run)
+        enqueue(run)
     }
 
-    /// Run at most one dep-major ticket deep-dive per tick: the first
-    /// configured repo whose last analysis is older than the interval.
+    /// Enqueue a dep-major ticket deep-dive for every configured repo whose
+    /// last analysis is older than the interval.
     /// Discovery of the actual tickets (JQL for open dep-major tickets
     /// without the dep-analyzed label) happens inside the command — the app
     /// itself never talks to Jira.
-    private func runDueTicketAnalysis() async {
+    private func enqueueDueTicketAnalyses() {
         guard AppSettings.ticketAnalysisEnabled else { return }
         let interval = TimeInterval(AppSettings.ticketAnalysisIntervalHours) * 3600
-        guard let repo = AppSettings.ticketAnalysisRepos.first(where: { repo in
-            guard let last = store.ticketAnalysisLastRun[repo] else { return true }
-            return Date().timeIntervalSince(last) >= interval
-        }) else { return }
-
-        await startTicketAnalysis(repo)
+        for repo in AppSettings.ticketAnalysisRepos {
+            if let last = store.ticketAnalysisLastRun[repo],
+               Date().timeIntervalSince(last) < interval { continue }
+            startTicketAnalysis(repo)
+        }
     }
 
     /// Manually trigger a ticket deep-dive from the UI, regardless of the
     /// automatic schedule (and even when it is disabled).
     func analyzeTickets(_ repo: String) {
-        Task {
-            guard !isBusy else { return }
-            isBusy = true
-            defer { isBusy = false }
-            AppLog.log("Manual ticket deep-dive: \(repo)")
-            await startTicketAnalysis(repo)
-        }
+        AppLog.log("Manual ticket deep-dive: \(repo)")
+        startTicketAnalysis(repo)
     }
 
-    private func startTicketAnalysis(_ repo: String) async {
+    private func startTicketAnalysis(_ repo: String) {
         // Same stamp-before-run rule as dependency scans.
         store.ticketAnalysisLastRun[repo] = Date()
         store.save()
@@ -229,22 +259,15 @@ final class Poller: ObservableObject {
         let run = ReviewRun(
             repo: repo, prNumber: 0, title: "Major ticket deep-dive",
             url: "https://github.com/\(repo)", kind: .ticketAnalysis)
-        store.upsert(run)
-        await review(run)
+        enqueue(run)
     }
 
     /// Re-run a review manually from the History window.
     func rerun(_ old: ReviewRun) {
-        Task {
-            guard !isBusy else { return }
-            isBusy = true
-            defer { isBusy = false }
-            let run = ReviewRun(
-                repo: old.repo, prNumber: old.prNumber, title: old.title, url: old.url,
-                kind: old.runKind)
-            store.upsert(run)
-            await review(run)
-        }
+        let run = ReviewRun(
+            repo: old.repo, prNumber: old.prNumber, title: old.title, url: old.url,
+            kind: old.runKind)
+        enqueue(run)
     }
 
     private func review(_ runIn: ReviewRun) async {
@@ -284,7 +307,6 @@ final class Poller: ObservableObject {
         run.localRepoPath = localPath
         run.status = .running
         run.startedAt = Date()
-        store.currentActivity = "\(kindNoun): \(run.key)"
         store.upsert(run)
         notify("\(kindNoun) started", run.key)
 
@@ -356,7 +378,6 @@ final class Poller: ObservableObject {
             run.errorMessage = err.isEmpty ? nil : String(err.suffix(500))
             notify("\(kindNoun) failed (exit \(result.exitCode))", run.key)
         }
-        store.currentActivity = nil
         store.upsert(run)
     }
 
