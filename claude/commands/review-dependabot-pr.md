@@ -3,9 +3,10 @@
 End-to-end review of a Dependabot PR in the current repo: analyze the bump,
 verify it against this codebase (running the project's own checks when the
 manifest changed), assess risk, and post one review comment to the GitHub PR
-and one to its Jira ticket. **Review only** — this command never approves,
-merges, labels, or closes a PR, never transitions a Jira ticket, and never
-pushes to a `dependabot/*` branch.
+and one to its Jira ticket. When everything looks OK — risk **LOW** and
+verification green — it also approves the PR (`gh pr review --approve`).
+It still never merges, labels, or closes a PR, never transitions a Jira
+ticket, and never pushes to a `dependabot/*` branch.
 
 ## Usage
 
@@ -139,7 +140,8 @@ merge after QA smoke test." HIGH → "Do not merge until <blockers>."
 Draft the review comment from the template below.
 
 - **Interactive:** present the draft in chat and ask "Post this to GitHub PR
-  #<n> and Jira <KEY>?" — post only after an explicit yes.
+  #<n> and Jira <KEY>?" (plus "…and approve the PR?" when the approval
+  criteria below are met) — post only after an explicit yes.
 - **`--auto`:** post immediately (pre-approved), marker appended.
 
 **GitHub:** `gh pr comment <n> --body-file <draft>`.
@@ -149,8 +151,29 @@ Atlassian MCP tools aren't available in this repo, skip Jira and say so.
 
 If `--coderabbit` was passed: afterwards `gh pr comment <n> --body "@coderabbitai review"`.
 
-Finish by reporting exactly what was posted (comment URLs) — or, interactive
-only, ask whether to switch anything back. Never leave the worktree behind.
+### 8. Approve when everything looks OK
+
+Approve **only** when ALL of these hold:
+
+- Risk assessment is **LOW** (recommendation "Safe to merge").
+- FULL_CHECKS ran fully green, or the mode was `ANALYZE_ONLY`/`DOCKERFILE`
+  with no concerns found.
+- We haven't already approved: check `gh pr view <n> --json reviews` for an
+  existing `APPROVED` review by the current `gh` user — if present, skip.
+
+Then:
+
+```bash
+gh pr review <n> --approve --body "Automated dependency review: LOW risk, verification green. See the analysis comment for details."
+```
+
+In interactive mode the approval is covered by the same yes in step 7's gate;
+in `--auto` it happens directly. **MEDIUM or HIGH risk never approves** — the
+analysis comment is the only output, and the human decides.
+
+Finish by reporting exactly what was posted (comment URLs) and whether the PR
+was approved — or, interactive only, ask whether to switch anything back.
+Never leave the worktree behind.
 
 ## Review comment template
 
