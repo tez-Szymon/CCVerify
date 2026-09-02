@@ -6,6 +6,11 @@ final class AppStore: ObservableObject {
     @Published var runs: [ReviewRun] = []
     @Published var seen: [String: String] = [:]
     @Published var hasBaselined = false
+    // Keys present in the last successful review-request poll. A seen PR that
+    // reappears here after being absent means its review was re-requested.
+    // nil = never recorded (state from an older app version): the next poll
+    // records the set without treating anything as renewed.
+    @Published var openReviewRequests: Set<String>?
     // Repos whose pre-existing Dependabot PR backlog has been marked seen
     // (baselined per repo, so repos added to the watch list later get their
     // own baseline instead of a review storm).
@@ -33,6 +38,7 @@ final class AppStore: ObservableObject {
         var dependabotBaselined: Set<String>?
         var depUpdateLastRun: [String: Date]?
         var ticketAnalysisLastRun: [String: Date]?
+        var openReviewRequests: Set<String>?
     }
 
     init() {
@@ -59,13 +65,14 @@ final class AppStore: ObservableObject {
         dependabotBaselined = state.dependabotBaselined ?? []
         depUpdateLastRun = state.depUpdateLastRun ?? [:]
         ticketAnalysisLastRun = state.ticketAnalysisLastRun ?? [:]
+        openReviewRequests = state.openReviewRequests
     }
 
     func save() {
         let state = PersistedState(
             runs: Array(runs.prefix(200)), seen: seen, hasBaselined: hasBaselined,
             dependabotBaselined: dependabotBaselined, depUpdateLastRun: depUpdateLastRun,
-            ticketAnalysisLastRun: ticketAnalysisLastRun)
+            ticketAnalysisLastRun: ticketAnalysisLastRun, openReviewRequests: openReviewRequests)
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         try? data.write(to: stateFile, options: .atomic)

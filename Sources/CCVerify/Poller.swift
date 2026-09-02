@@ -109,6 +109,7 @@ final class Poller: ObservableObject {
             return
         }
         store.lastPollError = nil
+        let currentKeys = Set(items.compactMap(\.key))
 
         // First successful poll: baseline the existing backlog so only PRs
         // assigned from now on trigger reviews (no token burn on old ones).
@@ -117,21 +118,36 @@ final class Poller: ObservableObject {
                 if let key = item.key { store.seen[key] = item.updatedAt }
             }
             store.hasBaselined = true
+            store.openReviewRequests = currentKeys
             store.save()
             AppLog.log("First poll: baselined \(items.count) existing review request(s)")
             return
         }
 
+        // GitHub drops a PR from --review-requested=@me once the review is
+        // submitted (or the request is removed); it reappears when someone
+        // re-requests the review. So a seen PR that is back after being absent
+        // last poll is a renewed request and gets reviewed again. A nil set
+        // (state from an older app version) just records without triggering.
+        let previouslyOpen = store.openReviewRequests
+        store.openReviewRequests = currentKeys
+        if previouslyOpen != currentKeys { store.save() }
+
         let newItems = items.filter { item in
             guard let key = item.key else { return false }
             return store.seen[key] == nil
         }
-        AppLog.log("Poll OK: \(items.count) open request(s), \(newItems.count) new")
-        for item in newItems {
+        let renewedItems = items.filter { item in
+            guard let previouslyOpen, let key = item.key else { return false }
+            return store.seen[key] != nil && !previouslyOpen.contains(key)
+        }
+        AppLog.log("Poll OK: \(items.count) open request(s), \(newItems.count) new, \(renewedItems.count) renewed")
+        for item in newItems + renewedItems {
             guard let repo = item.repoFullName, let key = item.key else { continue }
+            let renewed = store.seen[key] != nil
             // Mark seen immediately: failures are surfaced, never auto-retried.
             store.seen[key] = item.updatedAt
-            AppLog.log("NEW review request: \(key) (\(item.title))")
+            AppLog.log("\(renewed ? "RENEWED" : "NEW") review request: \(key) (\(item.title))")
             let run = ReviewRun(repo: repo, prNumber: item.number, title: item.title, url: item.url, kind: .review)
             enqueue(run)
         }
