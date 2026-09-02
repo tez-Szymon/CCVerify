@@ -28,6 +28,8 @@ enum AppSettings {
     // ticket. It never pushes to existing branches (enforced by the command).
     // Step 8 (major backlog tickets) additionally dedupes via JQL, comments on
     // existing tickets, and clears their dep-analyzed label on version drift.
+    // The transition tools exist for exactly one move: the updates ticket goes
+    // to Dev Complete once its PR exists (step 7) — backlog tickets never move.
     static let defaultDepUpdateAllowedTools = [
         defaultAllowedTools,
         "Edit",
@@ -39,11 +41,13 @@ enum AppSettings {
         "mcp__atlassian__getJiraProjectIssueTypesMetadata",
         "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__addCommentToJiraIssue",
         "mcp__atlassian__editJiraIssue",
+        "mcp__atlassian__getTransitionsForJiraIssue", "mcp__atlassian__transitionJiraIssue",
     ].joined(separator: ",")
 
     // /analyze-dep-tickets --auto deep-dives dep-major Jira tickets: JQL
     // discovery, ticket read/comment/label, trial upgrade in a throwaway
-    // worktree, and — on a SAFE verdict — a deps/major-* branch + PR.
+    // worktree, and — on a SAFE verdict — a deps/major-* branch + PR, then
+    // the ticket moves to Dev Complete (the only transition the command makes).
     static let defaultTicketAnalysisAllowedTools = [
         defaultAllowedTools,
         "Edit",
@@ -53,11 +57,13 @@ enum AppSettings {
         "Bash(yarn:*)", "Bash(npm:*)", "Bash(pnpm:*)", "Bash(npx:*)", "Bash(dotnet:*)",
         "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__getJiraIssue",
         "mcp__atlassian__addCommentToJiraIssue", "mcp__atlassian__editJiraIssue",
+        "mcp__atlassian__getTransitionsForJiraIssue", "mcp__atlassian__transitionJiraIssue",
     ].joined(separator: ",")
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             Keys.pollIntervalSecs: 120,
+            Keys.maxConcurrentRuns: 3,
             Keys.reposDir: ("~/Documents/Repos" as NSString).expandingTildeInPath,
             Keys.ghPath: "/opt/homebrew/bin/gh",
             Keys.claudePath: ("~/.local/bin/claude" as NSString).expandingTildeInPath,
@@ -85,6 +91,7 @@ enum AppSettings {
 
     enum Keys {
         static let pollIntervalSecs = "pollIntervalSecs"
+        static let maxConcurrentRuns = "maxConcurrentRuns"
         static let reposDir = "reposDir"
         static let ghPath = "ghPath"
         static let claudePath = "claudePath"
@@ -112,6 +119,7 @@ enum AppSettings {
     private static var d: UserDefaults { .standard }
 
     static var pollIntervalSecs: Int { max(30, d.integer(forKey: Keys.pollIntervalSecs)) }
+    static var maxConcurrentRuns: Int { max(1, d.integer(forKey: Keys.maxConcurrentRuns)) }
     static var reposDir: String { d.string(forKey: Keys.reposDir) ?? "" }
     static var ghPath: String { d.string(forKey: Keys.ghPath) ?? "/opt/homebrew/bin/gh" }
     static var claudePath: String { d.string(forKey: Keys.claudePath) ?? "" }

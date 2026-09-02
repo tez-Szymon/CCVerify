@@ -19,9 +19,10 @@ is fully green, it also opens the PR.
 
 **`--auto`:** the caller has pre-approved posting the analysis comment,
 adding the `dep-analyzed` label, and — on a SAFE verdict only — pushing a
-`deps/*` branch and opening the PR. No approval gates, every guard applies.
-Interactive mode: show the finished analysis and ask once per ticket before
-posting the comment (and, when SAFE, creating the PR).
+`deps/*` branch, opening the PR, and moving the ticket to Dev Complete. No
+approval gates, every guard applies. Interactive mode: show the finished
+analysis and ask once per ticket before posting the comment (and, when SAFE,
+creating the PR + the Dev Complete transition — one yes covers both).
 
 ## Hard safety rules (both modes)
 
@@ -43,9 +44,12 @@ posting the comment (and, when SAFE, creating the PR).
 6. **One PR per ticket.** If an open PR already references the ticket key or
    covers the same package group, link it in the comment instead of stacking
    a second one.
-7. **Comment + label, never state.** Do not transition the ticket, change
-   its assignee, or edit its description — the analysis lands as a comment
-   and the `dep-analyzed` label. Humans own the workflow state.
+7. **Comment + label; the only status change is Dev Complete after our own
+   PR.** When this command itself opened the PR (SAFE verdict), transition
+   the ticket to Dev Complete (step 8) — the development half is done, the
+   PR awaits human review. Never transition on NEEDS MIGRATION or BLOCKED,
+   never to any other status, and never change the assignee or edit the
+   description. Humans own the rest of the workflow state.
 
 ## Jira mapping
 
@@ -182,6 +186,15 @@ existing labels, never replace them (`dep-major` must survive). The label is
 the dedupe marker: `/update-dependencies` removes it again when the
 available version moves on, which re-queues the ticket here.
 
+**SAFE verdict only — move the ticket to Dev Complete.** The PR exists and
+is linked from the comment, so the ticket's development half is done. Look
+up the workflow's transitions (`getTransitionsForJiraIssue`) and pick the
+one whose target status matches "Dev Complete" (case-insensitive, ignoring
+`-`/`_`/spaces); apply it with `transitionJiraIssue`. If the workflow has no
+such transition from the current status, leave the status alone and note
+that in the run report — never guess a different status. NEEDS MIGRATION
+and BLOCKED tickets are never transitioned (rule 7).
+
 ### 9. Cleanup and report
 
 `git worktree remove … --force` (always), delete the local `deps/major-*`
@@ -190,9 +203,9 @@ ref if the worktree held it, and finish with the run report:
 ```md
 ## Dep-ticket deep-dive — <repo> <date>
 
-| Ticket | Package | Verdict | Comment | PR |
-|---|---|---|---|---|
-| PRK-N | pkg 10 → 12 | ✅/⚠️/⛔ | posted/skipped | url or — |
+| Ticket | Package | Verdict | Comment | PR | Status |
+|---|---|---|---|---|---|
+| PRK-N | pkg 10 → 12 | ✅/⚠️/⛔ | posted/skipped | url or — | dev complete / unchanged |
 
 <per-ticket one-paragraph summaries; anything skipped and why;
 tickets remaining in the queue>

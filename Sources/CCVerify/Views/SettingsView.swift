@@ -19,6 +19,7 @@ struct SettingsScreen: View {
     @State private var tab: Tab = .general
 
     @AppStorage(AppSettings.Keys.pollIntervalSecs) private var pollInterval = 120
+    @AppStorage(AppSettings.Keys.maxConcurrentRuns) private var maxConcurrentRuns = 3
     @AppStorage(AppSettings.Keys.reposDir) private var reposDir = ""
     @AppStorage(AppSettings.Keys.ghPath) private var ghPath = ""
     @AppStorage(AppSettings.Keys.claudePath) private var claudePath = ""
@@ -90,6 +91,8 @@ struct SettingsScreen: View {
         Form {
             Section("Polling") {
                 TextField("Poll interval (seconds)", value: $pollInterval, format: .number)
+                TextField("Max parallel agents", value: $maxConcurrentRuns, format: .number)
+                    .help("How many claude runs may execute at once; further runs wait in a queue")
                 Toggle("Include draft PRs", isOn: $includeDrafts)
                 TextField("Repos directory", text: $reposDir)
                     .help("Local checkouts are matched to GitHub repos by their origin remote")

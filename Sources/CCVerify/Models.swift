@@ -67,8 +67,12 @@ struct ReviewRun: Codable, Identifiable, Hashable {
 
     var runKind: Kind { kind ?? .review }
 
-    var key: String {
-        switch runKind {
+    var key: String { Self.key(kind: runKind, repo: repo, prNumber: prNumber) }
+
+    /// Also built standalone (before a run exists) to check whether the same
+    /// work is already queued or executing.
+    static func key(kind: Kind, repo: String, prNumber: Int) -> String {
+        switch kind {
         case .dependencyUpdate: return "\(repo) deps"
         case .ticketAnalysis: return "\(repo) tickets"
         case .review, .dependabot: return "\(repo)#\(prNumber)"

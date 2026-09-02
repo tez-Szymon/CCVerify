@@ -84,7 +84,7 @@ struct AppCommands: Commands {
                 Task { await poller.tick(force: true) }
             }
             .keyboardShortcut("r")
-            .disabled(poller.isBusy)
+            .disabled(poller.isPolling)
 
             Button(store.isPaused ? "Resume Watching" : "Pause Watching") {
                 store.isPaused.toggle()
@@ -101,9 +101,9 @@ struct AppCommands: Commands {
                 Menu("Scan for Updates") {
                     ForEach(repos, id: \.self) { repo in
                         Button(repo) { poller.scanDependencies(repo) }
+                            .disabled(poller.isActive(.dependencyUpdate, repo: repo))
                     }
                 }
-                .disabled(poller.isBusy)
             }
 
             let ticketRepos = AppSettings.repoList(ticketAnalysisReposRaw)
@@ -114,9 +114,9 @@ struct AppCommands: Commands {
                 Menu("Analyze Major Tickets") {
                     ForEach(ticketRepos, id: \.self) { repo in
                         Button(repo) { poller.analyzeTickets(repo) }
+                            .disabled(poller.isActive(.ticketAnalysis, repo: repo))
                     }
                 }
-                .disabled(poller.isBusy)
             }
         }
     }

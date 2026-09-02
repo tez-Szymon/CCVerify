@@ -106,7 +106,8 @@ gh pr create --base <base> --title "chore(deps): safe dependency updates (<YYYY-
 PR body: the report template below (bumps table with changelog links,
 verification results, what was skipped and why, risk note per bump).
 Interactive mode: show the plan and ask once before push/PR/tickets — one
-approval covering the PR, the updates ticket, and step 8's major tickets.
+approval covering the PR, the updates ticket (including its Dev Complete
+transition), and step 8's major tickets.
 
 ### 7. Create the updates Jira ticket
 
@@ -123,6 +124,15 @@ epic from the table when one is set): summary
 a `**PR:** <url>` link. Then edit the PR body to reference the ticket key.
 If the repo isn't in the table or the Atlassian tools aren't available in
 this repo, skip the ticket and say so in the final report.
+
+Then move the fresh ticket to **Dev Complete** — the PR carrying the work
+already exists, so the ticket is born with its development done. Look up the
+workflow's transitions (`getTransitionsForJiraIssue`) and pick the one whose
+target status matches "Dev Complete" (case-insensitive, ignoring
+`-`/`_`/spaces); apply it with `transitionJiraIssue`. If the workflow has no
+such transition, leave the status alone and note that in the report — never
+guess a different status. Step 8's backlog tickets are **never**
+transitioned (no PR exists for them).
 
 ### 8. File backlog tickets for majors (no PR — tickets only)
 

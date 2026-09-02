@@ -208,7 +208,7 @@ private struct RunDetailView: View {
                     }
                 }
                 Button("Re-run Review") { poller.rerun(run) }
-                    .disabled(poller.isBusy)
+                    .disabled(poller.isActive(key: run.key))
             }
             .controlSize(.small)
         }
