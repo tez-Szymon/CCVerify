@@ -65,10 +65,11 @@ No server, no webhooks, no repo admin rights: it polls
 ```
 CCVerify.app (menu bar, SwiftUI)
   └─ every N seconds: gh search prs --review-requested=@me --state=open
-       ├─ diff against seen set (first poll baselines the backlog)
+       ├─ diff against seen set (first poll baselines the backlog);
+       │    a seen PR reappearing after an absence = renewed request
        ├─ match owner/repo → local checkout under ~/Documents/Repos
        │    (by each folder's `origin` remote in .git/config)
-       └─ for each NEW review request:
+       └─ for each NEW or RENEWED review request:
             cd <local repo> && claude -p "/review-pr <url> --publish" --allowedTools <default set>
             → verdict + comments posted to the GitHub PR (--publish)
             → report + history entry in ~/Library/Application Support/CCVerify/
@@ -144,8 +145,11 @@ points at the new path.
 
 - **First poll baselines**: PRs already awaiting your review when the app
   first runs are marked seen — only *new* requests trigger reviews.
-- **One review per PR** (keyed `owner/repo#number`); a re-request after new
-  commits does not re-trigger. Use **Re-run Review** in the History window.
+- **One review per request** (keyed `owner/repo#number`): pushes and comments
+  on a PR whose request is still open never re-trigger. Re-requesting your
+  review after you've submitted one *does* trigger a fresh review (the PR
+  reappears in the `--review-requested=@me` search after being absent).
+  **Re-run Review** in the History window re-runs one manually at any time.
 - **Failures are never auto-retried** (no silent token burn) — you get a
   notification and a failed history entry instead.
 - **Publishes by default**: the prompt is `/review-pr {url} --publish`, so the
