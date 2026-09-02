@@ -28,6 +28,8 @@ enum AppSettings {
     // ticket. It never pushes to existing branches (enforced by the command).
     // Step 8 (major backlog tickets) additionally dedupes via JQL, comments on
     // existing tickets, and clears their dep-analyzed label on version drift.
+    // The transition tools exist for exactly one move: the updates ticket goes
+    // to Dev Complete once its PR exists (step 7) — backlog tickets never move.
     static let defaultDepUpdateAllowedTools = [
         defaultAllowedTools,
         "Edit",
@@ -39,11 +41,13 @@ enum AppSettings {
         "mcp__atlassian__getJiraProjectIssueTypesMetadata",
         "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__addCommentToJiraIssue",
         "mcp__atlassian__editJiraIssue",
+        "mcp__atlassian__getTransitionsForJiraIssue", "mcp__atlassian__transitionJiraIssue",
     ].joined(separator: ",")
 
     // /analyze-dep-tickets --auto deep-dives dep-major Jira tickets: JQL
     // discovery, ticket read/comment/label, trial upgrade in a throwaway
-    // worktree, and — on a SAFE verdict — a deps/major-* branch + PR.
+    // worktree, and — on a SAFE verdict — a deps/major-* branch + PR, then
+    // the ticket moves to Dev Complete (the only transition the command makes).
     static let defaultTicketAnalysisAllowedTools = [
         defaultAllowedTools,
         "Edit",
@@ -53,6 +57,7 @@ enum AppSettings {
         "Bash(yarn:*)", "Bash(npm:*)", "Bash(pnpm:*)", "Bash(npx:*)", "Bash(dotnet:*)",
         "mcp__atlassian__searchJiraIssuesUsingJql", "mcp__atlassian__getJiraIssue",
         "mcp__atlassian__addCommentToJiraIssue", "mcp__atlassian__editJiraIssue",
+        "mcp__atlassian__getTransitionsForJiraIssue", "mcp__atlassian__transitionJiraIssue",
     ].joined(separator: ",")
 
     static func registerDefaults() {

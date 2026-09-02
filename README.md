@@ -53,9 +53,12 @@ No server, no webhooks, no repo admin rights: it polls
   checks the codebase against every one of them, trial-upgrades in an isolated
   worktree, and posts the full analysis as a Jira comment. Verdict
   ✅ SAFE TO UPDATE (nothing affected + verification green) additionally opens
-  a `deps/major-*` PR linked from the comment; ⚠️ NEEDS MIGRATION /
-  ⛔ BLOCKED tickets get the analysis (with a migration checklist) only.
-  Never merges, approves, or transitions tickets.
+  a `deps/major-*` PR linked from the comment and moves the ticket to
+  **Dev Complete** (same for the updates ticket a dependency scan files with
+  its PR — a created PR is the one status change these bots make);
+  ⚠️ NEEDS MIGRATION / ⛔ BLOCKED tickets get the analysis (with a migration
+  checklist) only, and their status is never touched. Never merges or
+  approves.
 
 ## How it works
 
