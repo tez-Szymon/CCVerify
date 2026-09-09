@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// The two run categories the UI splits into: requested reviews vs everything
-/// Dependabot-related (Dependabot PR reviews + dependency update scans).
+/// The three run categories the UI splits into: reviews others requested from
+/// us, follow-ups on our own PRs, and everything Dependabot-related
+/// (Dependabot PR reviews, dependency scans, ticket deep-dives).
 enum RunTab: String, CaseIterable, Identifiable {
     case reviews = "Reviews"
+    case myPRs = "My PRs"
     case dependabot = "Dependabot"
 
     var id: String { rawValue }
@@ -11,7 +13,12 @@ enum RunTab: String, CaseIterable, Identifiable {
     func matches(_ run: ReviewRun) -> Bool {
         switch self {
         case .reviews: return run.runKind == .review
-        case .dependabot: return run.runKind != .review
+        case .myPRs: return run.runKind == .prFollowup
+        case .dependabot:
+            switch run.runKind {
+            case .dependabot, .dependencyUpdate, .ticketAnalysis: return true
+            case .review, .prFollowup: return false
+            }
         }
     }
 }
@@ -144,9 +151,7 @@ struct MenuContent: View {
                     .controlSize(.small)
             }
             if tabRuns.isEmpty {
-                Text(tab == .reviews
-                    ? "No reviews yet — you'll see them here when someone requests your review."
-                    : "No Dependabot activity yet — enable Dependabot reviews or dependency update scans in Settings.")
+                Text(emptyHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -172,6 +177,17 @@ struct MenuContent: View {
                     .buttonStyle(.plain)
                 }
             }
+        }
+    }
+
+    private var emptyHint: String {
+        switch tab {
+        case .reviews:
+            return "No reviews yet — you'll see them here when someone requests your review."
+        case .myPRs:
+            return "No follow-ups yet — enable PR follow-ups in Settings to have conflicts, review threads and red checks on your own PRs handled."
+        case .dependabot:
+            return "No Dependabot activity yet — enable Dependabot reviews or dependency update scans in Settings."
         }
     }
 
@@ -297,6 +313,10 @@ struct KindIcon: View {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.caption2).foregroundStyle(.secondary)
                 .help("Major ticket deep-dive")
+        case .prFollowup:
+            Image(systemName: "arrow.triangle.branch")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("Follow-up on your own PR")
         }
     }
 }

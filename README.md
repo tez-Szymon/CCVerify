@@ -27,10 +27,24 @@ No server, no webhooks, no repo admin rights: it polls
   Finished runs keep the final checkpoint list, turn count, and estimated cost;
   the raw event stream is saved next to each report as a `.jsonl` sidecar.
 - **In-window Settings** (⌘,, or the gear in the toolbar / status item) — shown
-  inside the main window, split into General / Reviews / Dependabot / Updates /
-  Tickets tabs: poll interval, repos directory, prompt templates, allowed
-  tools, timeout, draft filtering, notifications, launch at login.
+  inside the main window, split into General / Reviews / My PRs / Dependabot /
+  Updates / Tickets tabs: poll interval, repos directory, prompt templates,
+  allowed tools, timeout, draft filtering, notifications, launch at login.
 - **macOS notifications** on review start / finish / failure.
+- **PR follow-ups** (opt-in) — the other half of reviewing: watches **your
+  own** open PRs in a configured list of repos and reacts when one of them
+  needs you. Every poll triages each PR from a single GraphQL query — conflict
+  with the target branch, unresolved review threads (CodeRabbit and humans;
+  threads where your reply is the last word are skipped), a review that
+  requested changes, red CI. Only when something is found does an agent run
+  `/resolve-pr-feedback {number} --auto`: it classifies every item
+  (Fix / Answer / Decline / Defer), fixes what's valid in an isolated
+  worktree, verifies, pushes to the PR's own head branch, replies in every
+  thread — including "this doesn't apply, because…" — and resolves only the
+  threads it actually fixed. Unchanged feedback never starts a second run
+  (per-PR signal fingerprint), a cooldown (default 30 min) keeps a fix that
+  triggers a fresh bot review from looping, and at most 3 PRs are picked up
+  per poll. Never merges, approves, force-pushes, or pushes red.
 - **Dependabot reviews** (opt-in) — watches a configured list of repos for new
   PRs authored by Dependabot and reviews each one unattended with
   `/review-dependabot-pr {number} --auto`: toolchain-aware verification in an
@@ -78,6 +92,13 @@ CCVerify.app (menu bar, SwiftUI)
        └─ for each NEW Dependabot PR:
             claude -p "/review-dependabot-pr <number> --auto"
             → risk-assessed review comment → GitHub PR + linked Jira ticket
+  └─ if enabled: gh api graphql — our own open PRs (configured repos)
+       ├─ triage per PR: conflict / unresolved threads / changes requested /
+       │    red checks → fingerprint; unchanged fingerprint = no run
+       └─ for each actionable PR (max 3 per poll, per-PR cooldown):
+            claude -p "/resolve-pr-feedback <number> --auto"
+            → fixes verified in a worktree → push to the PR's own branch
+            → a reply in every thread, resolved only where actually fixed
   └─ if enabled: every N hours per configured repo:
             claude -p "/update-dependencies --auto"
             → safe patch/minor bumps verified in a worktree
@@ -106,9 +127,10 @@ Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
 The prompts invoke slash commands that must exist in your `~/.claude`. Copies
 ship in this repo (`claude/`): `/review-pr` (dispatcher + three stack-specific
 reviewer agents), `/review-dependabot-pr` (multi-stack Dependabot review with
-an unattended `--auto` mode), `/update-dependencies` (safe update scan), and
+an unattended `--auto` mode), `/update-dependencies` (safe update scan),
 `/analyze-dep-tickets` (deep-dive of the `dep-major` Jira tickets the scan
-files). Also bundled: the `dependabot-review` skill
+files), and `/resolve-pr-feedback` (follow-up on your own PRs — the
+unattended sibling of the interactive `gaaf:resolve-pr` skill). Also bundled: the `dependabot-review` skill
 (`claude/skills/dependabot-review/`), the interactive text2park.web-specific
 review workflow — not required by the app (the bundled command is
 self-contained), but version-controlled here so a machine that uses it can be
@@ -172,6 +194,15 @@ points at the new path.
   `gh pr create`, and Jira issue creation; ticket deep-dives get Jira
   search/read/comment/label instead of issue creation. None can approve or
   merge.
+- **PR follow-ups are opt-in** (off by default), scoped to a repo list, and
+  only ever act on PRs whose author is the `gh` user. They push to the PR's
+  own head branch and nothing else (`git push origin HEAD:…` — the allowlist
+  admits no other push form, no force, no branch deletion), never merge,
+  approve, close, re-target, or dismiss a review, and never push red: the
+  repo's full verification must pass in the worktree first. Conflicts are
+  merged only where the resolution is unambiguous — anything semantic is
+  aborted and handed back in a PR comment. Threads are resolved only when the
+  fix actually landed; answered, declined and deferred ones stay open.
 - **Update scans and ticket deep-dives never touch your working copy** —
   verification happens in a throwaway `git worktree`, and a run that proves
   nothing safe ends with a report (or an analysis comment), not a PR. A

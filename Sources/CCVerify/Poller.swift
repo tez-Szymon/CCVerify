@@ -47,6 +47,7 @@ final class Poller: ObservableObject {
         defer { isPolling = false }
         await pollReviewRequests()
         await pollDependabot()
+        await pollOwnPullRequests()
         enqueueDueDependencyUpdates()
         enqueueDueTicketAnalyses()
     }
@@ -214,6 +215,172 @@ final class Poller: ObservableObject {
         }
     }
 
+    // MARK: - Own PRs
+
+    /// At most this many follow-up runs are started per poll. The queue caps
+    /// concurrency anyway; this keeps a first enable (or a busy morning) from
+    /// stacking a dozen agents at once — the rest come on the next ticks.
+    private static let maxFollowupsPerTick = 3
+
+    /// One query answers everything the triage needs about our open PRs:
+    /// mergeability, the latest review per author, every review thread with
+    /// its last few comments, and the check rollup of the head commit.
+    private static let ownPRQuery = """
+    query($q: String!) {
+      viewer { login }
+      search(query: $q, type: ISSUE, first: 40) {
+        nodes {
+          ... on PullRequest {
+            number
+            title
+            url
+            isDraft
+            mergeable
+            headRefOid
+            baseRef { name target { oid } }
+            repository { nameWithOwner }
+            reviewDecision
+            latestReviews(first: 20) { nodes { id state author { login } } }
+            reviewThreads(first: 50) {
+              nodes {
+                id
+                isResolved
+                isOutdated
+                path
+                comments(last: 5) { nodes { id author { login } } }
+              }
+            }
+            commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+          }
+        }
+      }
+    }
+    """
+
+    /// Watch our own open PRs in the configured repos and hand the ones that
+    /// need attention to the follow-up agent: merge conflicts, unresolved
+    /// review threads (CodeRabbit and humans alike), reviews that requested
+    /// changes, and red CI. Nothing actionable → no agent run, no tokens.
+    private func pollOwnPullRequests() async {
+        guard AppSettings.prFollowupEnabled else { return }
+        let repos = AppSettings.prFollowupRepos
+        guard !repos.isEmpty else { return }
+
+        var search = "is:pr is:open author:@me " + repos.map { "repo:\($0)" }.joined(separator: " ")
+        if !AppSettings.includeDrafts { search += " -is:draft" }
+
+        let result = await ProcessRunner.run(
+            AppSettings.ghPath,
+            ["api", "graphql", "-f", "query=\(Self.ownPRQuery)", "-f", "q=\(search)"],
+            timeout: 90)
+        guard result.exitCode == 0, !result.timedOut,
+              let root = try? JSONDecoder().decode(OwnPRPoll.Root.self, from: result.stdout)
+        else {
+            let err = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // GraphQL errors come back on stdout with exit 0 → show whichever we got.
+            let detail = err.isEmpty ? result.stdoutText : err
+            AppLog.log("Own-PR poll failed: \(String(detail.prefix(300)))")
+            return
+        }
+
+        let viewer = root.data.viewer.login ?? ""
+        let candidates = root.data.search.nodes.compactMap { Self.triage($0, viewer: viewer) }
+        guard !candidates.isEmpty else { return }
+
+        var started = 0
+        var deferred = 0
+        for candidate in candidates {
+            let key = ReviewRun.key(kind: .prFollowup, repo: candidate.repo, prNumber: candidate.number)
+            // Same feedback as the last run acted on → nothing new to do.
+            if store.prFollowupHandled[key] == candidate.fingerprint { continue }
+            // Cooldown: a fix of ours often triggers a fresh bot review, and
+            // that must not become a tight loop. The fingerprint is left
+            // unrecorded so the PR comes back once the cooldown expires.
+            if let last = store.prFollowupLastRun[key],
+               Date().timeIntervalSince(last) < TimeInterval(AppSettings.prFollowupCooldownMins) * 60 {
+                continue
+            }
+            guard started < Self.maxFollowupsPerTick else {
+                deferred += 1
+                continue
+            }
+            started += 1
+            store.prFollowupHandled[key] = candidate.fingerprint
+            store.prFollowupLastRun[key] = Date()
+            store.save()
+            AppLog.log("PR follow-up: \(key) — \(candidate.summary)")
+            let run = ReviewRun(
+                repo: candidate.repo, prNumber: candidate.number, title: candidate.title,
+                url: candidate.url, kind: .prFollowup, triggerSummary: candidate.summary)
+            enqueue(run)
+        }
+        if deferred > 0 {
+            AppLog.log("PR follow-up: \(deferred) more PR(s) actionable, deferred to the next poll")
+        }
+    }
+
+    /// Decide whether one of our PRs needs the agent, and why. Returns nil
+    /// when nothing is pending — including threads where our own reply is the
+    /// last word, which means the ball is in the reviewer's court.
+    nonisolated static func triage(_ pr: OwnPRPoll.PullRequest, viewer: String) -> OwnPRCandidate? {
+        func isViewer(_ login: String?) -> Bool {
+            guard let login, !viewer.isEmpty else { return false }
+            return login.caseInsensitiveCompare(viewer) == .orderedSame
+        }
+
+        guard let number = pr.number, let repo = pr.repository?.nameWithOwner, let url = pr.url
+        else { return nil }
+
+        var tokens: [String] = []
+        var reasons: [String] = []
+        let head = pr.headRefOid ?? "?"
+
+        // UNKNOWN means GitHub is still computing the merge — not a conflict.
+        if pr.mergeable?.uppercased() == "CONFLICTING" {
+            let base = pr.baseRef?.target?.oid ?? "?"
+            // Both oids: a conflict we could not resolve is retried only once
+            // one of the two sides has actually moved.
+            tokens.append("conflict:\(base):\(head)")
+            reasons.append("conflicts with \(pr.baseRef?.name ?? "the base branch")")
+        }
+
+        let latestReviews: [OwnPRPoll.Review] = pr.latestReviews?.nodes ?? []
+        let changesRequested = latestReviews.filter { review in
+            guard review.state?.uppercased() == "CHANGES_REQUESTED" else { return false }
+            return !isViewer(review.author?.login)
+        }
+        for review in changesRequested { tokens.append("changes:\(review.id ?? "?")") }
+        if !changesRequested.isEmpty {
+            let who = changesRequested.compactMap { $0.author?.login }.joined(separator: ", ")
+            reasons.append("changes requested by \(who.isEmpty ? "a reviewer" : who)")
+        }
+
+        var openThreads = 0
+        for thread in pr.reviewThreads?.nodes ?? [] {
+            guard thread.isResolved != true, let id = thread.id else { continue }
+            // comments(last: 5) → the newest is last. Our own reply sitting at
+            // the end means the ball is in the reviewer's court, not ours.
+            let comments = thread.comments?.nodes ?? []
+            guard let last = comments.last, !isViewer(last.author?.login) else { continue }
+            tokens.append("thread:\(id):\(last.id ?? "?")")
+            openThreads += 1
+        }
+        if openThreads > 0 {
+            reasons.append("\(openThreads) unresolved review thread\(openThreads == 1 ? "" : "s")")
+        }
+
+        if let rollup = pr.commits?.nodes?.first?.commit?.statusCheckRollup?.state?.uppercased(),
+           rollup == "FAILURE" || rollup == "ERROR" {
+            tokens.append("checks:\(rollup):\(head)")
+            reasons.append("failing CI checks")
+        }
+
+        guard !tokens.isEmpty else { return nil }
+        return OwnPRCandidate(
+            repo: repo, number: number, title: pr.title ?? "PR #\(number)", url: url,
+            signalTokens: tokens, summary: reasons.joined(separator: "; "))
+    }
+
     /// Enqueue a dependency-update scan for every configured repo whose last
     /// scan is older than the configured interval; the agent-slot cap paces them.
     private func enqueueDueDependencyUpdates() {
@@ -318,6 +485,10 @@ final class Poller: ObservableObject {
             kindNoun = "Ticket deep-dive"
             promptTemplate = AppSettings.ticketAnalysisPromptTemplate
             allowedTools = AppSettings.ticketAnalysisAllowedTools
+        case .prFollowup:
+            kindNoun = "PR follow-up"
+            promptTemplate = AppSettings.prFollowupPromptTemplate
+            allowedTools = AppSettings.prFollowupAllowedTools
         }
 
         run.localRepoPath = localPath
@@ -332,6 +503,7 @@ final class Poller: ObservableObject {
         switch run.runKind {
         case .dependencyUpdate: slug = "deps"
         case .ticketAnalysis: slug = "tickets"
+        case .prFollowup: slug = "pr\(run.prNumber)-followup"
         case .review, .dependabot: slug = "pr\(run.prNumber)"
         }
         let fileName = "\(run.repo.replacingOccurrences(of: "/", with: "-"))-\(slug)-\(stamp).md"
@@ -342,6 +514,7 @@ final class Poller: ObservableObject {
             .replacingOccurrences(of: "{repo}", with: run.repo)
             .replacingOccurrences(of: "{number}", with: String(run.prNumber))
             .replacingOccurrences(of: "{title}", with: run.title)
+            .replacingOccurrences(of: "{signals}", with: run.triggerSummary ?? "")
 
         // Raw event stream is kept as a sidecar for debugging.
         let streamURL = reportURL.deletingPathExtension().appendingPathExtension("jsonl")

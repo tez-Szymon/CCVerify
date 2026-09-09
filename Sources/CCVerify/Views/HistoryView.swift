@@ -80,6 +80,11 @@ struct HistoryView: View {
                     "No reviews yet",
                     systemImage: "checkmark.seal",
                     description: Text("When someone requests your review on a PR, it will show up here."))
+            case .myPRs:
+                ContentUnavailableView(
+                    "No PR follow-ups yet",
+                    systemImage: "arrow.triangle.branch",
+                    description: Text("Enable PR follow-ups in Settings: your own open PRs get checked for conflicts, unresolved review threads, requested changes and red CI."))
             case .dependabot:
                 ContentUnavailableView(
                     "No Dependabot activity yet",
@@ -151,6 +156,12 @@ private struct RunDetailView: View {
                 GridRow {
                     label("Detected")
                     Text(run.detectedAt.formatted(date: .abbreviated, time: .standard))
+                }
+                if let trigger = run.triggerSummary {
+                    GridRow {
+                        label("Triggered by")
+                        Text(trigger)
+                    }
                 }
                 if let started = run.startedAt {
                     GridRow {
