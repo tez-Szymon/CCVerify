@@ -122,6 +122,20 @@ CCVerify.app (menu bar, SwiftUI)
 Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
 (logged in with your subscription via `/login`).
 
+### App icon
+
+`Support/AppIcon.icns` is checked in and copied into the bundle by
+`build.sh`. The art is code, not a binary blob — `Support/Icon/GenerateIcon.swift`
+draws it (a Claude-orange squircle with a white verification seal) at every
+size Core Graphics needs; regenerate after editing it:
+
+```bash
+./Support/Icon/make-icon.sh   # rewrites Support/AppIcon.icns + the preview PNG
+```
+
+macOS caches app icons aggressively — if the Dock still shows the old one
+after a rebuild, `touch dist/CCVerify.app` and relaunch.
+
 ### Install the review agent
 
 The prompts invoke slash commands that must exist in your `~/.claude`. Copies
