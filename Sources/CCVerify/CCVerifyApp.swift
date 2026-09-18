@@ -91,6 +91,14 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
 
+            // Stops the agents, not the watching: polling carries on, so a
+            // stopped run can be started again from History.
+            Button("Stop All Runs") {
+                poller.stopAll()
+            }
+            .keyboardShortcut(".", modifiers: .command)
+            .disabled(!poller.hasStoppableRuns)
+
             Divider()
 
             let repos = AppSettings.repoList(depUpdateReposRaw)

@@ -32,6 +32,7 @@ struct ReviewRun: Codable, Identifiable, Hashable {
         case failed
         case timedOut
         case noLocalRepo
+        case stopped
 
         var label: String {
             switch self {
@@ -41,6 +42,7 @@ struct ReviewRun: Codable, Identifiable, Hashable {
             case .failed: return "Failed"
             case .timedOut: return "Timed out"
             case .noLocalRepo: return "No local repo"
+            case .stopped: return "Stopped"
             }
         }
     }
@@ -71,6 +73,9 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var costUSD: Double?
 
     var runKind: Kind { kind ?? .review }
+
+    /// Queued or executing — i.e. there is something for Stop to act on.
+    var isStoppable: Bool { status == .queued || status == .running }
 
     var key: String { Self.key(kind: runKind, repo: repo, prNumber: prNumber) }
 

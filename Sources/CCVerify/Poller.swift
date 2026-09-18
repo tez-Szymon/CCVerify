@@ -20,6 +20,12 @@ final class Poller: ObservableObject {
     private var assistantText: [UUID: String] = [:]
     // TaskCreate assigns sequential ids ("Task #1 created"); mirror that here.
     private var taskCounter: [UUID: Int] = [:]
+    // Stop handles for the agent processes currently executing, by run id.
+    private var cancellations: [UUID: ProcessCancellation] = [:]
+    // Runs the user stopped. Needed as well as `cancellations` because a run
+    // can be stopped in the gap between leaving the queue and its process
+    // being launched — review() checks this before and after it starts one.
+    private var stopRequested: Set<UUID> = []
 
     init(store: AppStore) {
         self.store = store
@@ -87,6 +93,39 @@ final class Poller: ObservableObject {
                 self.pump()
             }
         }
+    }
+
+    /// Stop a run the user no longer wants: a queued one never starts, an
+    /// executing one gets its agent process terminated. Either way the run
+    /// ends up in history as "Stopped" — nothing is retried automatically.
+    func stop(_ run: ReviewRun) {
+        guard run.isStoppable else { return }
+        stopRequested.insert(run.id)
+
+        if let i = pendingRuns.firstIndex(where: { $0.id == run.id }) {
+            // Still waiting for a slot: drop it before it ever runs.
+            pendingRuns.remove(at: i)
+            activeKeys.remove(run.key)
+            stopRequested.remove(run.id)
+            var stopped = run
+            finishStopped(&stopped)
+            return
+        }
+
+        AppLog.log("Stopping run: \(run.key)")
+        cancellations[run.id]?.cancel()
+    }
+
+    /// Stop everything queued or executing.
+    func stopAll() {
+        for run in store.runs where run.isStoppable {
+            stop(run)
+        }
+    }
+
+    /// Whether there is anything to stop (drives the Stop All command).
+    var hasStoppableRuns: Bool {
+        store.runs.contains(where: \.isStoppable)
     }
 
     private func pollReviewRequests() async {
@@ -456,6 +495,13 @@ final class Poller: ObservableObject {
     private func review(_ runIn: ReviewRun) async {
         var run = runIn
 
+        // Stopped while it sat in the queue, after pump() had already picked
+        // it up: never start the agent.
+        if stopRequested.remove(run.id) != nil {
+            finishStopped(&run)
+            return
+        }
+
         guard let localPath = Self.resolveLocalRepo(run.repo) else {
             run.status = .noLocalRepo
             run.finishedAt = Date()
@@ -523,6 +569,10 @@ final class Poller: ObservableObject {
         let streamHandle = try? FileHandle(forWritingTo: streamURL)
 
         let runID = run.id
+        let cancellation = ProcessCancellation()
+        cancellations[runID] = cancellation
+        // Stop pressed between the status flipping to running and here.
+        if stopRequested.contains(runID) { cancellation.cancel() }
         let result = await ProcessRunner.run(
             AppSettings.claudePath,
             [
@@ -531,6 +581,7 @@ final class Poller: ObservableObject {
             ],
             cwd: localPath,
             timeout: TimeInterval(AppSettings.reviewTimeoutSecs),
+            cancellation: cancellation,
             onStdoutLine: { line in
                 streamHandle?.write(Data((line + "\n").utf8))
                 DispatchQueue.main.async {
@@ -539,6 +590,8 @@ final class Poller: ObservableObject {
             }
         )
         try? streamHandle?.close()
+        cancellations.removeValue(forKey: runID)
+        stopRequested.remove(runID)
 
         // Pick up progress fields the stream handler wrote while we awaited.
         if let live = store.runs.first(where: { $0.id == runID }) { run = live }
@@ -554,8 +607,14 @@ final class Poller: ObservableObject {
         run.finishedAt = Date()
         run.exitCode = result.exitCode
         run.reportPath = reportURL.path
-        AppLog.log("Review finished: \(run.key) exit=\(result.exitCode) timedOut=\(result.timedOut) report=\(reportURL.lastPathComponent)")
-        if result.timedOut {
+        AppLog.log("Review finished: \(run.key) exit=\(result.exitCode) timedOut=\(result.timedOut) cancelled=\(result.cancelled) report=\(reportURL.lastPathComponent)")
+        if result.cancelled {
+            // Whatever the agent produced before the signal is kept in the
+            // report, so a partial review isn't lost.
+            run.status = .stopped
+            run.errorMessage = "Stopped by you"
+            notify("\(kindNoun) stopped", run.key)
+        } else if result.timedOut {
             run.status = .timedOut
             notify("\(kindNoun) timed out", run.key)
         } else if result.exitCode == 0 {
@@ -568,6 +627,15 @@ final class Poller: ObservableObject {
             notify("\(kindNoun) failed (exit \(result.exitCode))", run.key)
         }
         store.upsert(run)
+    }
+
+    /// Mark a run the user stopped before its agent ever started.
+    private func finishStopped(_ run: inout ReviewRun) {
+        run.status = .stopped
+        run.finishedAt = Date()
+        run.errorMessage = "Stopped before it started"
+        store.upsert(run)
+        AppLog.log("Stopped run before start: \(run.key)")
     }
 
     // MARK: - Stream-json progress parsing

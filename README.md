@@ -14,12 +14,22 @@ No server, no webhooks, no repo admin rights: it polls
 
 - **Main window at launch** — the run history opens as a normal window; the
   Dock icon and Window menu bring it back, and the app has a real menu bar
-  (Runs → Poll Now / Pause / Scan for Updates, Settings… under ⌘,).
+  (Runs → Poll Now / Pause / Stop All Runs / Scan for Updates, Settings…
+  under ⌘,).
 - **Menu bar status item** — watching / reviewing / paused / poll errors, plus
   the five most recent runs at a glance.
 - **History window** — every run with status (done / failed / timed out /
-  no local repo), timestamps, duration, exit code, and the full review report
-  rendered in-app. Open the PR, reveal the report file, or re-run a review.
+  stopped / no local repo), timestamps, duration, exit code, and the full
+  review report rendered in-app. Open the PR, reveal the report file, or
+  re-run a review.
+- **Stop any run** — every queued or running action has a Stop button: in the
+  run's detail header, next to its live progress (in the window and in the
+  status item), on right-click in the history list, and as Runs → Stop All
+  Runs (⌘.) for everything at once. A queued run is dropped before it starts;
+  a running one gets SIGTERM (SIGKILL after 5s if it ignores it), keeps
+  whatever report it had produced, and lands in history as **Stopped**.
+  Stopping the agents doesn't pause polling, and nothing is auto-retried —
+  re-run it yourself when you want it back.
 - **Live progress** — reviews run with `--output-format stream-json`, so a
   running review shows its plan checkpoints (from claude's TaskCreate/TaskUpdate
   or TodoWrite), the current tool action, a recent-activity feed, and elapsed
@@ -187,7 +197,9 @@ points at the new path.
   reappears in the `--review-requested=@me` search after being absent).
   **Re-run Review** in the History window re-runs one manually at any time.
 - **Failures are never auto-retried** (no silent token burn) — you get a
-  notification and a failed history entry instead.
+  notification and a failed history entry instead. The same holds for runs you
+  stop: the PR/scan stays marked handled, so only **Re-run Review** starts it
+  again.
 - **Publishes by default**: the prompt is `/review-pr {url} --publish`, so the
   verdict (approve / request changes) and grouped findings are posted to the
   GitHub PR. For local-only reports, remove `--publish` from the prompt

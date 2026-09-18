@@ -28,6 +28,9 @@ struct HistoryView: View {
                         RunRow(run: run)
                             .tag(run.id)
                             .contextMenu {
+                                if run.isStoppable {
+                                    Button("Stop", role: .destructive) { poller.stop(run) }
+                                }
                                 Button("Delete", role: .destructive) { store.delete(run) }
                             }
                     }
@@ -50,6 +53,14 @@ struct HistoryView: View {
         .toolbar {
             if tab == .dependabot {
                 DependencyScanMenu()
+            }
+            if poller.hasStoppableRuns {
+                Button(role: .destructive) {
+                    poller.stopAll()
+                } label: {
+                    Label("Stop All", systemImage: "stop.circle")
+                }
+                .help("Stop every queued and running agent (⌘.)")
             }
             Button {
                 store.showingSettings = true
@@ -218,8 +229,15 @@ private struct RunDetailView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: reportPath)])
                     }
                 }
-                Button("Re-run Review") { poller.rerun(run) }
-                    .disabled(poller.isActive(key: run.key))
+                if run.isStoppable {
+                    Button("Stop", role: .destructive) { poller.stop(run) }
+                        .help(run.status == .queued
+                            ? "Drop this run from the queue — it never starts."
+                            : "Terminate the agent running this \(run.runKind.label.lowercased()).")
+                } else {
+                    Button("Re-run Review") { poller.rerun(run) }
+                        .disabled(poller.isActive(key: run.key))
+                }
             }
             .controlSize(.small)
         }
@@ -281,23 +299,33 @@ private struct RunDetailView: View {
 /// the plan checkpoints claude maintains, and a recent-activity feed.
 struct LiveProgressView: View {
     @EnvironmentObject var store: AppStore
+    @EnvironmentObject var poller: Poller
     let run: ReviewRun
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
-                VStack(alignment: .leading, spacing: 4) {
-                    if let estimate = store.estimatedDuration(for: run.runKind) {
-                        ProgressView(value: min(elapsed / estimate, 1))
-                        Text(etaText(elapsed: elapsed, estimate: estimate))
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                        Text("Elapsed \(format(elapsed)) — no estimate yet (first review)")
-                            .font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let estimate = store.estimatedDuration(for: run.runKind) {
+                            ProgressView(value: min(elapsed / estimate, 1))
+                            Text(etaText(elapsed: elapsed, estimate: estimate))
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                            Text("Elapsed \(format(elapsed)) — no estimate yet (first review)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
+                    Button(role: .destructive) {
+                        poller.stop(run)
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .controlSize(.small)
+                    .help("Terminate this agent now. Whatever it produced so far is kept.")
                 }
             }
 

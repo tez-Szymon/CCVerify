@@ -5,9 +5,58 @@ struct ProcessResult {
     var stdout: Data
     var stderr: Data
     var timedOut: Bool
+    /// The caller asked for the process to stop (Stop button), as opposed to
+    /// the watchdog firing or the command exiting on its own.
+    var cancelled: Bool = false
 
     var stdoutText: String { String(data: stdout, encoding: .utf8) ?? "" }
     var stderrText: String { String(data: stderr, encoding: .utf8) ?? "" }
+}
+
+/// Handle a caller keeps to stop a running process. Created before the run,
+/// it works whether `cancel()` arrives before the process launched (it then
+/// never launches), while it runs, or after it already finished (no-op).
+final class ProcessCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+
+    /// Register the process about to be launched. Returns false when cancel()
+    /// already arrived — the caller must not launch it at all.
+    func attach(_ process: Process) -> Bool {
+        lock.withLock {
+            guard !cancelled else { return false }
+            self.process = process
+            return true
+        }
+    }
+
+    func cancel() {
+        let process: Process? = lock.withLock {
+            cancelled = true
+            return self.process
+        }
+        Self.terminate(process)
+    }
+
+    /// Called right after launch: closes the window where cancel() landed
+    /// between attach() and run(), when there was nothing yet to signal.
+    func terminateIfCancelled() {
+        let process: Process? = lock.withLock { cancelled ? self.process : nil }
+        Self.terminate(process)
+    }
+
+    /// SIGTERM first so claude can wind down, SIGKILL if it doesn't — the same
+    /// escalation the run timeout uses.
+    private static func terminate(_ process: Process?) {
+        guard let process, process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+    }
 }
 
 enum ProcessRunner {
@@ -21,6 +70,7 @@ enum ProcessRunner {
         cwd: String? = nil,
         timeout: TimeInterval? = nil,
         stdoutFile: URL? = nil,
+        cancellation: ProcessCancellation? = nil,
         onStdoutLine: (@Sendable (String) -> Void)? = nil
     ) async -> ProcessResult {
         await withCheckedContinuation { continuation in
@@ -28,7 +78,8 @@ enum ProcessRunner {
                 continuation.resume(
                     returning: runSync(
                         executable, arguments, cwd: cwd, timeout: timeout,
-                        stdoutFile: stdoutFile, onStdoutLine: onStdoutLine))
+                        stdoutFile: stdoutFile, cancellation: cancellation,
+                        onStdoutLine: onStdoutLine))
             }
         }
     }
@@ -39,6 +90,7 @@ enum ProcessRunner {
         cwd: String?,
         timeout: TimeInterval?,
         stdoutFile: URL?,
+        cancellation: ProcessCancellation?,
         onStdoutLine: (@Sendable (String) -> Void)?
     ) -> ProcessResult {
         let process = Process()
@@ -46,6 +98,14 @@ enum ProcessRunner {
         process.arguments = arguments
         if let cwd {
             process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
+        }
+
+        // Stopped before it ever launched: report it without spawning anything
+        // (and without setting up pipes or a watchdog for a process that
+        // will never exist).
+        if let cancellation, !cancellation.attach(process) {
+            return ProcessResult(
+                exitCode: -1, stdout: Data(), stderr: Data(), timedOut: false, cancelled: true)
         }
 
         var env = ProcessInfo.processInfo.environment
@@ -116,6 +176,7 @@ enum ProcessRunner {
 
         do {
             try process.run()
+            cancellation?.terminateIfCancelled()
         } catch {
             watchdog?.cancel()
             return ProcessResult(
@@ -144,6 +205,7 @@ enum ProcessRunner {
         try? outputHandle?.close()
 
         return ProcessResult(
-            exitCode: process.terminationStatus, stdout: outData, stderr: errData, timedOut: timedOut)
+            exitCode: process.terminationStatus, stdout: outData, stderr: errData,
+            timedOut: timedOut, cancelled: cancellation?.isCancelled ?? false)
     }
 }
