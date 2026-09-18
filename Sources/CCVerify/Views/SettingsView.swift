@@ -8,6 +8,7 @@ struct SettingsScreen: View {
     enum Tab: String, CaseIterable, Identifiable {
         case general = "General"
         case reviews = "Reviews"
+        case myPRs = "My PRs"
         case dependabot = "Dependabot"
         case updates = "Updates"
         case tickets = "Tickets"
@@ -28,6 +29,12 @@ struct SettingsScreen: View {
     @AppStorage(AppSettings.Keys.reviewTimeoutSecs) private var reviewTimeout = 2400
     @AppStorage(AppSettings.Keys.includeDrafts) private var includeDrafts = false
     @AppStorage(AppSettings.Keys.notify) private var notify = true
+
+    @AppStorage(AppSettings.Keys.prFollowupEnabled) private var prFollowupEnabled = false
+    @AppStorage(AppSettings.Keys.prFollowupRepos) private var prFollowupRepos = ""
+    @AppStorage(AppSettings.Keys.prFollowupCooldownMins) private var prFollowupCooldownMins = 30
+    @AppStorage(AppSettings.Keys.prFollowupPromptTemplate) private var prFollowupPromptTemplate = ""
+    @AppStorage(AppSettings.Keys.prFollowupAllowedTools) private var prFollowupAllowedTools = ""
 
     @AppStorage(AppSettings.Keys.dependabotEnabled) private var dependabotEnabled = false
     @AppStorage(AppSettings.Keys.dependabotRepos) private var dependabotRepos = ""
@@ -59,7 +66,7 @@ struct SettingsScreen: View {
             .labelsHidden()
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .frame(maxWidth: 620)
+            .frame(maxWidth: 720)
             Divider()
             form
         }
@@ -81,6 +88,7 @@ struct SettingsScreen: View {
         switch tab {
         case .general: generalForm
         case .reviews: reviewsForm
+        case .myPRs: myPRsForm
         case .dependabot: dependabotForm
         case .updates: updatesForm
         case .tickets: ticketsForm
@@ -135,6 +143,38 @@ struct SettingsScreen: View {
                     .help("Applies to all run kinds: reviews, Dependabot reviews, and dependency scans.")
                 Button("Reset allowed tools to default") {
                     allowedTools = AppSettings.defaultAllowedTools
+                }
+                .controlSize(.small)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var myPRsForm: some View {
+        Form {
+            Section("Follow-ups on your own PRs") {
+                Text("Every poll checks your open PRs in the selected repos for things worth acting on: a conflict with the target branch, unresolved review threads (CodeRabbit and humans), a review that requested changes, and failing CI. When something is found — and only then — an agent runs /resolve-pr-feedback: it fixes what's valid in an isolated worktree, pushes to the PR branch, and answers every thread (including \"this doesn't apply, because…\").")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Follow up automatically", isOn: $prFollowupEnabled)
+            }
+            RepoMultiPicker(title: "Watched repos", rawSelection: $prFollowupRepos)
+            Section("Pacing") {
+                TextField("Min minutes between runs on the same PR", value: $prFollowupCooldownMins, format: .number)
+                    .help("A push of ours usually triggers a fresh bot review; the cooldown keeps that from becoming a loop. Unchanged feedback never starts a run at all.")
+                Text("At most 3 PRs are picked up per poll — the rest follow on the next ones.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Advanced") {
+                TextField("Prompt template", text: $prFollowupPromptTemplate)
+                    .help("Placeholders: {url} {repo} {number} {title} {signals}. --auto = unattended: fixes, pushes and thread replies need no approval.")
+                TextField("Allowed tools", text: $prFollowupAllowedTools, axis: .vertical)
+                    .lineLimit(3...8)
+                    .font(.caption)
+                    .help("Adds Edit, worktree + package-manager commands, and push to the PR's own head branch (git push origin HEAD:… only — never force, never another branch).")
+                Button("Reset allowed tools to default") {
+                    prFollowupAllowedTools = AppSettings.defaultPRFollowupAllowedTools
                 }
                 .controlSize(.small)
             }

@@ -14,12 +14,22 @@ No server, no webhooks, no repo admin rights: it polls
 
 - **Main window at launch** — the run history opens as a normal window; the
   Dock icon and Window menu bring it back, and the app has a real menu bar
-  (Runs → Poll Now / Pause / Scan for Updates, Settings… under ⌘,).
+  (Runs → Poll Now / Pause / Stop All Runs / Scan for Updates, Settings…
+  under ⌘,).
 - **Menu bar status item** — watching / reviewing / paused / poll errors, plus
   the five most recent runs at a glance.
 - **History window** — every run with status (done / failed / timed out /
-  no local repo), timestamps, duration, exit code, and the full review report
-  rendered in-app. Open the PR, reveal the report file, or re-run a review.
+  stopped / no local repo), timestamps, duration, exit code, and the full
+  review report rendered in-app. Open the PR, reveal the report file, or
+  re-run a review.
+- **Stop any run** — every queued or running action has a Stop button: in the
+  run's detail header, next to its live progress (in the window and in the
+  status item), on right-click in the history list, and as Runs → Stop All
+  Runs (⌘.) for everything at once. A queued run is dropped before it starts;
+  a running one gets SIGTERM (SIGKILL after 5s if it ignores it), keeps
+  whatever report it had produced, and lands in history as **Stopped**.
+  Stopping the agents doesn't pause polling, and nothing is auto-retried —
+  re-run it yourself when you want it back.
 - **Live progress** — reviews run with `--output-format stream-json`, so a
   running review shows its plan checkpoints (from claude's TaskCreate/TaskUpdate
   or TodoWrite), the current tool action, a recent-activity feed, and elapsed
@@ -27,10 +37,24 @@ No server, no webhooks, no repo admin rights: it polls
   Finished runs keep the final checkpoint list, turn count, and estimated cost;
   the raw event stream is saved next to each report as a `.jsonl` sidecar.
 - **In-window Settings** (⌘,, or the gear in the toolbar / status item) — shown
-  inside the main window, split into General / Reviews / Dependabot / Updates /
-  Tickets tabs: poll interval, repos directory, prompt templates, allowed
-  tools, timeout, draft filtering, notifications, launch at login.
+  inside the main window, split into General / Reviews / My PRs / Dependabot /
+  Updates / Tickets tabs: poll interval, repos directory, prompt templates,
+  allowed tools, timeout, draft filtering, notifications, launch at login.
 - **macOS notifications** on review start / finish / failure.
+- **PR follow-ups** (opt-in) — the other half of reviewing: watches **your
+  own** open PRs in a configured list of repos and reacts when one of them
+  needs you. Every poll triages each PR from a single GraphQL query — conflict
+  with the target branch, unresolved review threads (CodeRabbit and humans;
+  threads where your reply is the last word are skipped), a review that
+  requested changes, red CI. Only when something is found does an agent run
+  `/resolve-pr-feedback {number} --auto`: it classifies every item
+  (Fix / Answer / Decline / Defer), fixes what's valid in an isolated
+  worktree, verifies, pushes to the PR's own head branch, replies in every
+  thread — including "this doesn't apply, because…" — and resolves only the
+  threads it actually fixed. Unchanged feedback never starts a second run
+  (per-PR signal fingerprint), a cooldown (default 30 min) keeps a fix that
+  triggers a fresh bot review from looping, and at most 3 PRs are picked up
+  per poll. Never merges, approves, force-pushes, or pushes red.
 - **Dependabot reviews** (opt-in) — watches a configured list of repos for new
   PRs authored by Dependabot and reviews each one unattended with
   `/review-dependabot-pr {number} --auto`: toolchain-aware verification in an
@@ -78,6 +102,13 @@ CCVerify.app (menu bar, SwiftUI)
        └─ for each NEW Dependabot PR:
             claude -p "/review-dependabot-pr <number> --auto"
             → risk-assessed review comment → GitHub PR + linked Jira ticket
+  └─ if enabled: gh api graphql — our own open PRs (configured repos)
+       ├─ triage per PR: conflict / unresolved threads / changes requested /
+       │    red checks → fingerprint; unchanged fingerprint = no run
+       └─ for each actionable PR (max 3 per poll, per-PR cooldown):
+            claude -p "/resolve-pr-feedback <number> --auto"
+            → fixes verified in a worktree → push to the PR's own branch
+            → a reply in every thread, resolved only where actually fixed
   └─ if enabled: every N hours per configured repo:
             claude -p "/update-dependencies --auto"
             → safe patch/minor bumps verified in a worktree
@@ -101,14 +132,29 @@ CCVerify.app (menu bar, SwiftUI)
 Requirements: Xcode (or CLT with Swift), `gh` (authenticated), `claude`
 (logged in with your subscription via `/login`).
 
+### App icon
+
+`Support/AppIcon.icns` is checked in and copied into the bundle by
+`build.sh`. The art is code, not a binary blob — `Support/Icon/GenerateIcon.swift`
+draws it (a Claude-orange squircle with a white verification seal) at every
+size Core Graphics needs; regenerate after editing it:
+
+```bash
+./Support/Icon/make-icon.sh   # rewrites Support/AppIcon.icns + the preview PNG
+```
+
+macOS caches app icons aggressively — if the Dock still shows the old one
+after a rebuild, `touch dist/CCVerify.app` and relaunch.
+
 ### Install the review agent
 
 The prompts invoke slash commands that must exist in your `~/.claude`. Copies
 ship in this repo (`claude/`): `/review-pr` (dispatcher + three stack-specific
 reviewer agents), `/review-dependabot-pr` (multi-stack Dependabot review with
-an unattended `--auto` mode), `/update-dependencies` (safe update scan), and
+an unattended `--auto` mode), `/update-dependencies` (safe update scan),
 `/analyze-dep-tickets` (deep-dive of the `dep-major` Jira tickets the scan
-files). Also bundled: the `dependabot-review` skill
+files), and `/resolve-pr-feedback` (follow-up on your own PRs — the
+unattended sibling of the interactive `gaaf:resolve-pr` skill). Also bundled: the `dependabot-review` skill
 (`claude/skills/dependabot-review/`), the interactive text2park.web-specific
 review workflow — not required by the app (the bundled command is
 self-contained), but version-controlled here so a machine that uses it can be
@@ -151,7 +197,9 @@ points at the new path.
   reappears in the `--review-requested=@me` search after being absent).
   **Re-run Review** in the History window re-runs one manually at any time.
 - **Failures are never auto-retried** (no silent token burn) — you get a
-  notification and a failed history entry instead.
+  notification and a failed history entry instead. The same holds for runs you
+  stop: the PR/scan stays marked handled, so only **Re-run Review** starts it
+  again.
 - **Publishes by default**: the prompt is `/review-pr {url} --publish`, so the
   verdict (approve / request changes) and grouped findings are posted to the
   GitHub PR. For local-only reports, remove `--publish` from the prompt
@@ -172,6 +220,15 @@ points at the new path.
   `gh pr create`, and Jira issue creation; ticket deep-dives get Jira
   search/read/comment/label instead of issue creation. None can approve or
   merge.
+- **PR follow-ups are opt-in** (off by default), scoped to a repo list, and
+  only ever act on PRs whose author is the `gh` user. They push to the PR's
+  own head branch and nothing else (`git push origin HEAD:…` — the allowlist
+  admits no other push form, no force, no branch deletion), never merge,
+  approve, close, re-target, or dismiss a review, and never push red: the
+  repo's full verification must pass in the worktree first. Conflicts are
+  merged only where the resolution is unambiguous — anything semantic is
+  aborted and handed back in a PR comment. Threads are resolved only when the
+  fix actually landed; answered, declined and deferred ones stay open.
 - **Update scans and ticket deep-dives never touch your working copy** —
   verification happens in a throwaway `git worktree`, and a run that proves
   nothing safe ends with a report (or an analysis comment), not a PR. A

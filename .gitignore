@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.profraw
 reports/
+
+# Regenerable icon preview (Support/Icon/make-icon.sh).
+Support/Icon/AppIcon-preview.png

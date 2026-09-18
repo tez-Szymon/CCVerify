@@ -19,6 +19,12 @@ final class AppStore: ObservableObject {
     @Published var depUpdateLastRun: [String: Date] = [:]
     // Last dep-major ticket deep-dive per repo (owner/repo → date).
     @Published var ticketAnalysisLastRun: [String: Date] = [:]
+    // Own-PR follow-up: the signal fingerprint last acted on per PR
+    // (run key → fingerprint). A PR is only re-run when this changes, so
+    // sitting on the same unresolved thread costs nothing.
+    @Published var prFollowupHandled: [String: String] = [:]
+    // Last follow-up run per PR (run key → date), for the cooldown.
+    @Published var prFollowupLastRun: [String: Date] = [:]
     @Published var lastPollAt: Date?
     @Published var lastPollError: String?
     @Published var isPaused: Bool {
@@ -39,6 +45,8 @@ final class AppStore: ObservableObject {
         var depUpdateLastRun: [String: Date]?
         var ticketAnalysisLastRun: [String: Date]?
         var openReviewRequests: Set<String>?
+        var prFollowupHandled: [String: String]?
+        var prFollowupLastRun: [String: Date]?
     }
 
     init() {
@@ -66,13 +74,16 @@ final class AppStore: ObservableObject {
         depUpdateLastRun = state.depUpdateLastRun ?? [:]
         ticketAnalysisLastRun = state.ticketAnalysisLastRun ?? [:]
         openReviewRequests = state.openReviewRequests
+        prFollowupHandled = state.prFollowupHandled ?? [:]
+        prFollowupLastRun = state.prFollowupLastRun ?? [:]
     }
 
     func save() {
         let state = PersistedState(
             runs: Array(runs.prefix(200)), seen: seen, hasBaselined: hasBaselined,
             dependabotBaselined: dependabotBaselined, depUpdateLastRun: depUpdateLastRun,
-            ticketAnalysisLastRun: ticketAnalysisLastRun, openReviewRequests: openReviewRequests)
+            ticketAnalysisLastRun: ticketAnalysisLastRun, openReviewRequests: openReviewRequests,
+            prFollowupHandled: prFollowupHandled, prFollowupLastRun: prFollowupLastRun)
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: AppPaths.appSupport, withIntermediateDirectories: true)
         try? data.write(to: stateFile, options: .atomic)

@@ -60,6 +60,20 @@ enum AppSettings {
         "mcp__atlassian__getTransitionsForJiraIssue", "mcp__atlassian__transitionJiraIssue",
     ].joined(separator: ",")
 
+    // /resolve-pr-feedback --auto works on our own open PRs: it reads the
+    // threads and checks, fixes what's valid in a throwaway worktree, pushes
+    // to the PR's own head branch (never force, never another branch), and
+    // replies to every thread through the GraphQL mutations behind `gh api`.
+    static let defaultPRFollowupAllowedTools = [
+        defaultAllowedTools,
+        "Edit",
+        "Bash(gh pr list:*)", "Bash(gh run:*)",
+        "Bash(git worktree:*)", "Bash(git rev-list:*)", "Bash(git add:*)",
+        "Bash(git commit:*)", "Bash(git merge:*)",
+        "Bash(git checkout:*)", "Bash(git restore:*)", "Bash(git push origin HEAD:*)",
+        "Bash(yarn:*)", "Bash(npm:*)", "Bash(pnpm:*)", "Bash(npx:*)", "Bash(dotnet:*)",
+    ].joined(separator: ",")
+
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             Keys.pollIntervalSecs: 120,
@@ -86,6 +100,11 @@ enum AppSettings {
             Keys.ticketAnalysisIntervalHours: 24,
             Keys.ticketAnalysisPromptTemplate: "/analyze-dep-tickets --auto",
             Keys.ticketAnalysisAllowedTools: defaultTicketAnalysisAllowedTools,
+            Keys.prFollowupEnabled: false,
+            Keys.prFollowupRepos: "",
+            Keys.prFollowupCooldownMins: 30,
+            Keys.prFollowupPromptTemplate: "/resolve-pr-feedback {number} --auto",
+            Keys.prFollowupAllowedTools: defaultPRFollowupAllowedTools,
         ])
     }
 
@@ -114,6 +133,11 @@ enum AppSettings {
         static let ticketAnalysisIntervalHours = "ticketAnalysisIntervalHours"
         static let ticketAnalysisPromptTemplate = "ticketAnalysisPromptTemplate"
         static let ticketAnalysisAllowedTools = "ticketAnalysisAllowedTools"
+        static let prFollowupEnabled = "prFollowupEnabled"
+        static let prFollowupRepos = "prFollowupRepos"
+        static let prFollowupCooldownMins = "prFollowupCooldownMins"
+        static let prFollowupPromptTemplate = "prFollowupPromptTemplate"
+        static let prFollowupAllowedTools = "prFollowupAllowedTools"
     }
 
     private static var d: UserDefaults { .standard }
@@ -156,6 +180,18 @@ enum AppSettings {
     }
     static var ticketAnalysisAllowedTools: String {
         d.string(forKey: Keys.ticketAnalysisAllowedTools) ?? defaultTicketAnalysisAllowedTools
+    }
+
+    static var prFollowupEnabled: Bool { d.bool(forKey: Keys.prFollowupEnabled) }
+    static var prFollowupRepos: [String] { repoList(d.string(forKey: Keys.prFollowupRepos) ?? "") }
+    /// Floor on how often the same PR may be worked on again, so a fix that
+    /// triggers a fresh bot review can't turn into a tight loop.
+    static var prFollowupCooldownMins: Int { max(5, d.integer(forKey: Keys.prFollowupCooldownMins)) }
+    static var prFollowupPromptTemplate: String {
+        d.string(forKey: Keys.prFollowupPromptTemplate) ?? "/resolve-pr-feedback {number} --auto"
+    }
+    static var prFollowupAllowedTools: String {
+        d.string(forKey: Keys.prFollowupAllowedTools) ?? defaultPRFollowupAllowedTools
     }
 
     /// Parse a user-entered repo list ("owner/repo, owner/repo2" or one per line).

@@ -10,6 +10,10 @@
   <string>com.ccverify.app</string>
   <key>CFBundleExecutable</key>
   <string>CCVerify</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

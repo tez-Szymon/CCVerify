@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// The two run categories the UI splits into: requested reviews vs everything
-/// Dependabot-related (Dependabot PR reviews + dependency update scans).
+/// The three run categories the UI splits into: reviews others requested from
+/// us, follow-ups on our own PRs, and everything Dependabot-related
+/// (Dependabot PR reviews, dependency scans, ticket deep-dives).
 enum RunTab: String, CaseIterable, Identifiable {
     case reviews = "Reviews"
+    case myPRs = "My PRs"
     case dependabot = "Dependabot"
 
     var id: String { rawValue }
@@ -11,7 +13,12 @@ enum RunTab: String, CaseIterable, Identifiable {
     func matches(_ run: ReviewRun) -> Bool {
         switch self {
         case .reviews: return run.runKind == .review
-        case .dependabot: return run.runKind != .review
+        case .myPRs: return run.runKind == .prFollowup
+        case .dependabot:
+            switch run.runKind {
+            case .dependabot, .dependencyUpdate, .ticketAnalysis: return true
+            case .review, .prFollowup: return false
+            }
         }
     }
 }
@@ -70,31 +77,41 @@ struct MenuContent: View {
     private func liveProgress(for run: ReviewRun, showKey: Bool = false) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed = context.date.timeIntervalSince(run.startedAt ?? context.date)
-            VStack(alignment: .leading, spacing: 3) {
-                if showKey {
-                    Text("\(run.runKind.label): \(run.key)")
-                        .font(.caption2.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if showKey {
+                        Text("\(run.runKind.label): \(run.key)")
+                            .font(.caption2.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let estimate = store.estimatedDuration(for: run.runKind) {
+                        ProgressView(value: min(elapsed / estimate, 1))
+                            .controlSize(.small)
+                        Text("\(formatDuration(elapsed)) elapsed — ≈\(formatDuration(max(0, estimate - elapsed))) left")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("\(formatDuration(elapsed)) elapsed")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let todos = run.todos, !todos.isEmpty {
+                        let done = todos.filter { $0.status == "completed" }.count
+                        Text("Checkpoints: \(done)/\(todos.count)"
+                            + (todos.first(where: { $0.status == "in_progress" }).map { " — \($0.content)" } ?? ""))
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let action = run.currentAction {
+                        Text(action)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.tertiary).lineLimit(1)
+                    }
                 }
-                if let estimate = store.estimatedDuration(for: run.runKind) {
-                    ProgressView(value: min(elapsed / estimate, 1))
-                        .controlSize(.small)
-                    Text("\(formatDuration(elapsed)) elapsed — ≈\(formatDuration(max(0, estimate - elapsed))) left")
-                        .font(.caption2).foregroundStyle(.secondary)
-                } else {
-                    Text("\(formatDuration(elapsed)) elapsed")
-                        .font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    poller.stop(run)
+                } label: {
+                    Image(systemName: "stop.fill")
                 }
-                if let todos = run.todos, !todos.isEmpty {
-                    let done = todos.filter { $0.status == "completed" }.count
-                    Text("Checkpoints: \(done)/\(todos.count)"
-                        + (todos.first(where: { $0.status == "in_progress" }).map { " — \($0.content)" } ?? ""))
-                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
-                if let action = run.currentAction {
-                    Text(action)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.tertiary).lineLimit(1)
-                }
+                .controlSize(.small)
+                .help("Stop this \(run.runKind.label.lowercased())")
             }
         }
     }
@@ -144,9 +161,7 @@ struct MenuContent: View {
                     .controlSize(.small)
             }
             if tabRuns.isEmpty {
-                Text(tab == .reviews
-                    ? "No reviews yet — you'll see them here when someone requests your review."
-                    : "No Dependabot activity yet — enable Dependabot reviews or dependency update scans in Settings.")
+                Text(emptyHint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -166,6 +181,16 @@ struct MenuContent: View {
                             Spacer()
                             Text(run.detectedAt.formatted(.relative(presentation: .named)))
                                 .font(.caption2).foregroundStyle(.tertiary)
+                            if run.isStoppable {
+                                Button {
+                                    poller.stop(run)
+                                } label: {
+                                    Image(systemName: "stop.fill")
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                                .help("Stop this \(run.runKind.label.lowercased())")
+                            }
                         }
                         .contentShape(Rectangle())
                     }
@@ -175,12 +200,26 @@ struct MenuContent: View {
         }
     }
 
+    private var emptyHint: String {
+        switch tab {
+        case .reviews:
+            return "No reviews yet — you'll see them here when someone requests your review."
+        case .myPRs:
+            return "No follow-ups yet — enable PR follow-ups in Settings to have conflicts, review threads and red checks on your own PRs handled."
+        case .dependabot:
+            return "No Dependabot activity yet — enable Dependabot reviews or dependency update scans in Settings."
+        }
+    }
+
     private var actions: some View {
         HStack {
             Button("History") { openHistory() }
             Button(store.isPaused ? "Resume" : "Pause") { store.isPaused.toggle() }
             Button("Poll now") { Task { await poller.tick(force: true) } }
                 .disabled(poller.isPolling)
+            Button("Stop all") { poller.stopAll() }
+                .disabled(!poller.hasStoppableRuns)
+                .help("Stop every queued and running agent")
             Spacer()
             Button {
                 store.showingSettings = true
@@ -297,6 +336,10 @@ struct KindIcon: View {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.caption2).foregroundStyle(.secondary)
                 .help("Major ticket deep-dive")
+        case .prFollowup:
+            Image(systemName: "arrow.triangle.branch")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("Follow-up on your own PR")
         }
     }
 }
@@ -311,6 +354,7 @@ struct StatusBadge: View {
         case .running, .queued: return .blue
         case .failed, .timedOut: return .red
         case .noLocalRepo: return .orange
+        case .stopped: return .gray
         }
     }
 
