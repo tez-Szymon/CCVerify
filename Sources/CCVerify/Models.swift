@@ -71,6 +71,10 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var recentActions: [String]?
     var numTurns: Int?
     var costUSD: Double?
+    /// Models the agent ran on: the session's own model first (from the
+    /// stream's init event), then any others the run's subagents used (from
+    /// the final result event's per-model usage).
+    var models: [String]?
 
     var runKind: Kind { kind ?? .review }
 
@@ -96,6 +100,12 @@ struct ReviewRun: Codable, Identifiable, Hashable {
     var duration: TimeInterval? {
         guard let startedAt, let finishedAt else { return nil }
         return finishedAt.timeIntervalSince(startedAt)
+    }
+
+    /// Models joined for display; nil for runs from before this was recorded.
+    var modelText: String? {
+        guard let models, !models.isEmpty else { return nil }
+        return models.joined(separator: ", ")
     }
 
     var durationText: String? {

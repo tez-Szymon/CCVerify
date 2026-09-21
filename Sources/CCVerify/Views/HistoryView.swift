@@ -203,6 +203,12 @@ private struct RunDetailView: View {
                         Text(String(exitCode))
                     }
                 }
+                if let models = run.modelText {
+                    GridRow {
+                        label("Model")
+                        Text(models).textSelection(.enabled)
+                    }
+                }
                 if let turns = run.numTurns {
                     GridRow {
                         label("Turns")
