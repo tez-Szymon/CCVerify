@@ -10,6 +10,12 @@ enum RunTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The tab a run belongs to — used to follow a run selected from outside
+    /// the history list (a clicked notification, a menu-bar row).
+    static func tab(for run: ReviewRun) -> RunTab {
+        allCases.first { $0.matches(run) } ?? .reviews
+    }
+
     func matches(_ run: ReviewRun) -> Bool {
         switch self {
         case .reviews: return run.runKind == .review
@@ -167,6 +173,7 @@ struct MenuContent: View {
             } else {
                 ForEach(tabRuns.prefix(5)) { run in
                     Button {
+                        store.reveal(run.id)
                         openHistory()
                     } label: {
                         HStack(spacing: 6) {

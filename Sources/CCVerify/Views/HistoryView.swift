@@ -3,7 +3,6 @@ import SwiftUI
 struct HistoryView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var poller: Poller
-    @State private var selectedID: ReviewRun.ID?
     @State private var tab: RunTab = .reviews
 
     private var tabRuns: [ReviewRun] {
@@ -23,7 +22,7 @@ struct HistoryView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 Divider()
-                List(selection: $selectedID) {
+                List(selection: $store.selectedRunID) {
                     ForEach(tabRuns) { run in
                         RunRow(run: run)
                             .tag(run.id)
@@ -43,7 +42,7 @@ struct HistoryView: View {
             }
             .navigationSplitViewColumnWidth(min: 260, ideal: 320)
         } detail: {
-            if let run = store.runs.first(where: { $0.id == selectedID }) {
+            if let run = store.runs.first(where: { $0.id == store.selectedRunID }) {
                 RunDetailView(run: run)
             } else {
                 ContentUnavailableView("Select a run", systemImage: "sidebar.left")
@@ -71,11 +70,23 @@ struct HistoryView: View {
         }
         // Keep the selection in whichever tab the user is looking at.
         .onChange(of: tab) { _, newTab in
-            if let selectedID, let run = store.runs.first(where: { $0.id == selectedID }),
+            if let id = store.selectedRunID, let run = store.runs.first(where: { $0.id == id }),
                !newTab.matches(run) {
-                self.selectedID = nil
+                store.selectedRunID = nil
             }
         }
+        // A run selected from elsewhere — a clicked notification, a menu-bar
+        // row — may live under another tab; follow it there. Also on appear,
+        // for a click that reopened this window.
+        .onChange(of: store.selectedRunID) { _, _ in showSelectedRunsTab() }
+        .onAppear { showSelectedRunsTab() }
+    }
+
+    private func showSelectedRunsTab() {
+        guard let id = store.selectedRunID,
+              let run = store.runs.first(where: { $0.id == id })
+        else { return }
+        tab = RunTab.tab(for: run)
     }
 
     private func label(for tab: RunTab) -> String {
@@ -190,6 +201,12 @@ private struct RunDetailView: View {
                     GridRow {
                         label("Exit code")
                         Text(String(exitCode))
+                    }
+                }
+                if let models = run.modelText {
+                    GridRow {
+                        label("Model")
+                        Text(models).textSelection(.enabled)
                     }
                 }
                 if let turns = run.numTurns {

@@ -54,6 +54,7 @@ struct SettingsScreen: View {
     @AppStorage(AppSettings.Keys.ticketAnalysisAllowedTools) private var ticketAnalysisAllowedTools = ""
 
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var notificationsBlocked = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,6 +114,18 @@ struct SettingsScreen: View {
 
             Section("App") {
                 Toggle("Notifications", isOn: $notify)
+                if notificationsBlocked {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("macOS is blocking them. Allow CCVerify under Notifications.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("Open System Settings") {
+                            Notifier.openSystemNotificationSettings()
+                        }
+                        .buttonStyle(.link).font(.caption)
+                    }
+                }
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {
@@ -128,6 +141,9 @@ struct SettingsScreen: View {
             }
         }
         .formStyle(.grouped)
+        // Re-checked on every visit: the permission can be flipped in System
+        // Settings while the app is running.
+        .task { notificationsBlocked = await Notifier.shared.blockedBySystem() }
     }
 
     private var reviewsForm: some View {

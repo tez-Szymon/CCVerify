@@ -507,7 +507,7 @@ final class Poller: ObservableObject {
             run.finishedAt = Date()
             run.errorMessage = "No checkout matching \(run.repo) found under \(AppSettings.reposDir)"
             store.upsert(run)
-            notify("No local repo", run.key)
+            notify("No local repo", run)
             return
         }
 
@@ -541,7 +541,7 @@ final class Poller: ObservableObject {
         run.status = .running
         run.startedAt = Date()
         store.upsert(run)
-        notify("\(kindNoun) started", run.key)
+        notify("\(kindNoun) started", run)
 
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
@@ -613,18 +613,18 @@ final class Poller: ObservableObject {
             // report, so a partial review isn't lost.
             run.status = .stopped
             run.errorMessage = "Stopped by you"
-            notify("\(kindNoun) stopped", run.key)
+            notify("\(kindNoun) stopped", run)
         } else if result.timedOut {
             run.status = .timedOut
-            notify("\(kindNoun) timed out", run.key)
+            notify("\(kindNoun) timed out", run)
         } else if result.exitCode == 0 {
             run.status = .done
-            notify("\(kindNoun) finished", run.key)
+            notify("\(kindNoun) finished", run)
         } else {
             run.status = .failed
             let err = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             run.errorMessage = err.isEmpty ? nil : String(err.suffix(500))
-            notify("\(kindNoun) failed (exit \(result.exitCode))", run.key)
+            notify("\(kindNoun) failed (exit \(result.exitCode))", run)
         }
         store.upsert(run)
     }
@@ -648,6 +648,14 @@ final class Poller: ObservableObject {
         guard var run = store.runs.first(where: { $0.id == runID }) else { return }
 
         switch type {
+        case "system":
+            // The init event names the model the session runs on — the only
+            // place it appears, since we never pass --model ourselves.
+            guard event["subtype"] as? String == "init",
+                  let model = event["model"] as? String, !model.isEmpty
+            else { return }
+            run.models = [model]
+            store.updateLive(run)
         case "assistant":
             guard let message = event["message"] as? [String: Any],
                   let content = message["content"] as? [[String: Any]]
@@ -718,6 +726,13 @@ final class Poller: ObservableObject {
             store.updateLive(run)
         case "result":
             run.numTurns = event["num_turns"] as? Int
+            // Subagents can run on other models; modelUsage lists every one
+            // that billed, so add whatever init didn't already name.
+            if let usage = event["modelUsage"] as? [String: Any] {
+                var models = run.models ?? []
+                models.append(contentsOf: usage.keys.sorted().filter { !models.contains($0) })
+                run.models = models
+            }
             if let cost = event["total_cost_usd"] as? Double, cost > 0 {
                 run.costUSD = cost
             }
@@ -826,14 +841,9 @@ final class Poller: ObservableObject {
 
     // MARK: - Notifications
 
-    private func notify(_ title: String, _ body: String) {
+    /// Body is the run key; clicking the banner opens the app on that run.
+    private func notify(_ title: String, _ run: ReviewRun) {
         guard AppSettings.notify else { return }
-        func esc(_ s: String) -> String {
-            s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        }
-        let script = "display notification \"\(esc(body))\" with title \"CCVerify\" subtitle \"\(esc(title))\""
-        Task.detached(priority: .utility) {
-            _ = await ProcessRunner.run("/usr/bin/osascript", ["-e", script], timeout: 10)
-        }
+        Notifier.shared.post(title: title, body: run.key, runID: run.id)
     }
 }
