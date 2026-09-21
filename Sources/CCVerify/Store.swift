@@ -32,6 +32,10 @@ final class AppStore: ObservableObject {
     }
     // Main window shows settings in place of the run history (not persisted).
     @Published var showingSettings = false
+    /// Run selected in the history window. Lives here rather than in the view
+    /// so a notification click (or a menu-bar row) can point the window at a
+    /// particular run.
+    @Published var selectedRunID: ReviewRun.ID?
 
     var reviewsDir: URL { AppPaths.reviews }
     private var stateFile: URL { AppPaths.stateFile }
@@ -117,8 +121,16 @@ final class AppStore: ObservableObject {
         return max(120, durations[durations.count / 2])
     }
 
+    /// Point the history window at a run, replacing the settings screen if
+    /// it is up. Raising the window itself is the caller's job.
+    func reveal(_ runID: ReviewRun.ID) {
+        showingSettings = false
+        selectedRunID = runID
+    }
+
     func delete(_ run: ReviewRun) {
         runs.removeAll { $0.id == run.id }
+        if selectedRunID == run.id { selectedRunID = nil }
         save()
     }
 }

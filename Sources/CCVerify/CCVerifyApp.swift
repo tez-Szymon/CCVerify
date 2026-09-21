@@ -14,6 +14,13 @@ struct CCVerifyApp: App {
         // Started here, not from a view .task: MenuBarExtra labels render via
         // NSStatusItem and never fire view lifecycle modifiers.
         poller.start()
+        // Delegate has to be in place before the app finishes launching, or
+        // a click on an already-posted banner is dropped.
+        Notifier.shared.start()
+        Notifier.onOpenRun = { [store] runID in
+            store.reveal(runID)
+            WindowRouter.showHistory()
+        }
     }
 
     var body: some Scene {
@@ -44,13 +51,19 @@ struct CCVerifyApp: App {
 /// settings screen — settings are an in-window view, not a separate modal.
 struct MainWindow: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        if store.showingSettings {
-            SettingsScreen()
-        } else {
-            HistoryView()
+        Group {
+            if store.showingSettings {
+                SettingsScreen()
+            } else {
+                HistoryView()
+            }
         }
+        // Hand `openWindow` to code that lives outside any scene — a clicked
+        // notification has to reopen this window even after it was closed.
+        .onAppear { WindowRouter.openHistory = { openWindow(id: "history") } }
     }
 }
 
