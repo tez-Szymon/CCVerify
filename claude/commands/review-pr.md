@@ -81,7 +81,42 @@ gh pr comment N --body-file high.md      # 🟠 High — N findings
 gh pr comment N --body-file major.md     # 🟡 Major — N findings
 gh pr comment N --body-file minor.md     # ⚪ Minor — N findings
 ```
-Each comment: a `## 🟠 High — N findings` heading, then every finding with `path:line` (as a markdown link to the file at the PR head SHA where practical), problem, failure scenario, and suggested fix. Minor findings may be a compact list. Empty severities get no comment.
+Each comment must scan in seconds: a summary table first, the detail collapsed below it. Layout:
+
+```markdown
+## 🟠 High — 2 findings
+
+| # | Where | Issue |
+|---|-------|-------|
+| 1 | [`CaptureService.cs:42`](https://github.com/OWNER/REPO/blob/HEAD_SHA/src/Payments/CaptureService.cs#L42) | Missing null check on refund result |
+| 2 | [`CacheRefresher.cs:17`](https://github.com/OWNER/REPO/blob/HEAD_SHA/src/Cache/CacheRefresher.cs#L17) | Race between refresh and read |
+
+<details>
+<summary><b>1. Missing null check on refund result</b> — <code>CaptureService.cs:42</code></summary>
+
+**Problem:** …
+
+**Failure scenario:** …
+
+**Fix:** …
+
+</details>
+
+<details>
+<summary><b>2. Race between refresh and read</b> — <code>CacheRefresher.cs:17</code></summary>
+
+…
+
+</details>
+```
+
+Rules:
+- The table's **Issue** cell is the finding title only: one line, under ~70 characters, and no `|` characters (they break the table).
+- Link `Where` to the file at the PR head SHA (`gh pr view N --json headRefOid`); show just the file name and line, not the full path.
+- Every `<details>` block needs a blank line after `<summary>…</summary>` and another before `</details>`, or GitHub won't render the markdown inside.
+- Put one fenced code block inside a finding's details only when the fix needs code; keep problem, scenario and fix to a sentence or two each.
+- Minor findings: the table alone is enough when the title says it all; add a `<details>` block only for findings that need an explanation.
+- Empty severities get no comment.
 
 **C. Confirm in chat** — after publishing, list exactly what was posted: review type (approve / request changes / comment fallback), number of inline comments, and which grouped comments were created, with the PR URL.
 
