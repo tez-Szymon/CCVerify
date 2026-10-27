@@ -1,6 +1,6 @@
 ---
 name: dependabot-review
-description: End-to-end review of a Dependabot PR in the text2park.web project. Analyzes the PR, auto-detects mode (workflow-only/Dockerfile/package update), runs the appropriate verification (jest/lint/build for package updates, deep analysis for Dockerfile/runtime), rebases against develop if the branch is behind (with approval), drafts a risk-assessed summary, posts comments to the GitHub PR and the auto-discovered Jira ticket — always after the user approves — and approves the PR when risk is LOW and verification is fully green. Use when the user invokes `/review-dependabot-pr` or asks to "review dependabot PR <number>".
+description: End-to-end review of a Dependabot PR in the text2park.web project. Analyzes the PR, auto-detects mode (workflow-only/Dockerfile/package update), runs the appropriate verification (jest/lint/build for package updates, deep analysis for Dockerfile/runtime), rebases against develop if the branch is behind (with approval), drafts a risk-assessed summary, posts comments to the GitHub PR and the auto-discovered Jira ticket — after the user approves, or directly with `--auto` (unattended, pre-approved) — and approves the PR when risk is LOW and verification is fully green. Use when the user invokes `/review-dependabot-pr` or asks to "review dependabot PR <number>".
 ---
 
 # Dependabot PR Review (text2park.web)
@@ -23,10 +23,26 @@ The slash command supplies one positional PR ID plus optional flags:
 
 - `<pr-id>` (required) — numeric, e.g. `1738`
 - `--coderabbit` (optional) — also post `@coderabbitai review` on the PR after the analysis comment lands
+- `--auto` (optional) — unattended mode, see below
+
+## Unattended mode (`--auto`)
+
+CCVerify runs `/review-dependabot-pr <id> --auto` headless: nobody is there to answer a question, so a run that ends by asking "Post this?" posts nothing. With `--auto` the caller has **pre-approved posting**, and these overrides apply to the whole procedure:
+
+- **Dedupe first.** Before anything else, check `gh pr view <pr-id> --json comments` for the marker `<!-- auto-dependabot-review -->`. If present, the PR is already reviewed — report that and stop.
+- **Step 3:** no `tez-depbot` comment (after the one retry from Gotchas) → don't ask; skip the Jira comment and say "no linked Jira ticket found" in the GitHub comment.
+- **Step 4:** never rebase, never push. If the branch is behind, run the checks on it as-is and put "N commits behind `develop` — comment `@dependabot rebase`" in the review.
+- **Step 5:** never commit or push fixes (no `yarn format` commits). Format failures are reported as cosmetic. Lint errors / test / build failures do **not** stop the run: they are the review — risk **HIGH**, failing output quoted, "Do not merge until …".
+- **Step 7:** no gate. Go straight to Step 8.
+- **Step 8:** post the GitHub comment (with `<!-- auto-dependabot-review -->` appended as the last line) and the Jira comment directly. Approve when the approval criteria hold. If the Atlassian MCP tools aren't available in this repo, skip Jira and say so in the final report.
+  - Write the comment body with the **Write tool** (e.g. `/tmp/depreview-<repo-name>-<pr-id>.md`), then run `gh pr comment <pr-id> --body-file <file>` and `gh pr review <pr-id> --approve …` as **separate, standalone Bash calls** — no `cd … &&`, no heredoc, no chaining. Headless runs only pass pre-allowed commands; a compound command doesn't match the `gh pr comment` / `gh pr review` allow rules and gets denied as an external write (this is what blocked PR #431 on 2026-10-27).
+- **Finish** with a short report: comment URLs, Jira comment ID, whether the PR was approved, and anything skipped. Never end with a question.
+
+Hard rules 1, 2 (the "step 7 gate" part), 4 and 6 are satisfied by the pre-approval — `--auto` never rebases, commits, or pushes, so there is nothing left to ask about. Everything else (no merges, no labels, no Jira transitions, MEDIUM/HIGH never approves, worktree only, yarn only) still holds.
 
 ## Hard Rules
 
-1. **Never post a comment without explicit user approval first.** Always draft the summary, present it, ask the user to confirm, then post.
+1. **Never post a comment without explicit user approval first.** Always draft the summary, present it, ask the user to confirm, then post. (`--auto` is that approval, given up front — see above.)
 2. **Approve the PR only when everything looks OK** — risk assessment **LOW** and verification fully green — and only as part of the step 7 approval gate. MEDIUM/HIGH risk never approves. Never merge, never add labels or other status changes.
 3. **Never change the Jira ticket's status.** Comment only.
 4. **Never force-push a rebase unless the user explicitly approves.** Ask each time.
